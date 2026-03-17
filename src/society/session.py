@@ -12,6 +12,7 @@ from society.society import Society
 
 SESSION_DIR = Path.home() / ".society"
 SESSION_FILE = SESSION_DIR / "session.json"
+SESSIONS_DIR = SESSION_DIR / "sessions"
 
 
 class SessionData(BaseModel):
@@ -54,3 +55,29 @@ def society_to_session(society: Society) -> SessionData:
         agents=list(society.agents.values()),
         conversation=list(society.conversation),
     )
+
+
+def save_named_session(name: str, data: SessionData) -> None:
+    """Save a session snapshot to ~/.society/sessions/<name>.json."""
+    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    path = SESSIONS_DIR / f"{name}.json"
+    path.write_text(data.model_dump_json(indent=2))
+
+
+def load_named_session(name: str) -> SessionData | None:
+    """Load a named session. Returns None if not found."""
+    path = SESSIONS_DIR / f"{name}.json"
+    if not path.exists():
+        return None
+    try:
+        raw = json.loads(path.read_text())
+        return SessionData.model_validate(raw)
+    except (json.JSONDecodeError, Exception):
+        return None
+
+
+def list_sessions() -> list[str]:
+    """List all saved session names."""
+    if not SESSIONS_DIR.exists():
+        return []
+    return sorted(p.stem for p in SESSIONS_DIR.glob("*.json"))

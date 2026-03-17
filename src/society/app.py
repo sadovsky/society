@@ -22,7 +22,7 @@ from textual.widgets import (
     TabPane,
 )
 
-from society.models import Agent, AgentStatus, Memory, Message
+from society.models import AGENT_TEMPLATES, PRESETS, Agent, AgentConfig, AgentStatus, Memory, Message, Temperament
 from society.society import Society
 
 
@@ -120,6 +120,13 @@ class AgentSidebar(Widget):
         for card in self.query(AgentCard):
             card.refresh_status()
 
+    def rebuild(self) -> None:
+        """Remove all agent cards and re-compose from current society state."""
+        for card in self.query(AgentCard):
+            card.remove()
+        for agent in self.society.agents.values():
+            self.mount(AgentCard(agent))
+
 
 class ConversationPanel(Widget):
     """Main panel showing the conversation/debate."""
@@ -128,16 +135,24 @@ class ConversationPanel(Widget):
     ConversationPanel {
         height: 1fr;
         border: round $surface-lighten-2;
+        layout: vertical;
+    }
+    #streaming-msg {
+        height: auto;
+        max-height: 6;
+        padding: 0 1;
+        color: $text-muted;
     }
     """
 
-    AGENT_COLORS = {}
-
     def __init__(self) -> None:
         super().__init__()
+        self._streaming_agent: str | None = None
+        self._streaming_buffer: str = ""
 
     def compose(self) -> ComposeResult:
         yield RichLog(highlight=True, markup=True, wrap=True, id="conversation-log")
+        yield Static("", id="streaming-msg")
 
     def add_message(self, message: Message, color: str = "white") -> None:
         try:
@@ -148,6 +163,38 @@ class ConversationPanel(Widget):
                 log.write(
                     f"\n[bold {color}]{message.agent_name}:[/bold {color}] {message.content}"
                 )
+        except NoMatches:
+            pass
+
+    def show_thinking(self, agent_name: str, color: str = "white") -> None:
+        """Show a thinking indicator for an agent."""
+        try:
+            streaming = self.query_one("#streaming-msg", Static)
+            streaming.update(f"[dim {color}]{agent_name} is thinking...[/dim {color}]")
+        except NoMatches:
+            pass
+
+    def stream_token(self, agent_name: str, token: str, color: str = "white") -> None:
+        """Append a streaming token to the current response."""
+        if self._streaming_agent != agent_name:
+            self._streaming_agent = agent_name
+            self._streaming_buffer = ""
+        self._streaming_buffer += token
+        try:
+            streaming = self.query_one("#streaming-msg", Static)
+            # Show last ~200 chars of the streaming buffer to keep it readable
+            display = self._streaming_buffer[-200:]
+            streaming.update(f"[bold {color}]{agent_name}:[/bold {color}] {display}")
+        except NoMatches:
+            pass
+
+    def clear_streaming(self) -> None:
+        """Clear the streaming indicator."""
+        self._streaming_agent = None
+        self._streaming_buffer = ""
+        try:
+            streaming = self.query_one("#streaming-msg", Static)
+            streaming.update("")
         except NoMatches:
             pass
 
@@ -180,6 +227,24 @@ class MemoryPanel(Widget):
                 log.write(f"  [{m.source}] {importance} {m.summary()}")
         except NoMatches:
             pass
+
+
+# Temperament heuristics (shared with commands.py)
+_TEMPERAMENT_HINTS: dict[str, Temperament] = {
+    "security": Temperament.SKEPTICAL, "review": Temperament.SKEPTICAL,
+    "test": Temperament.SKEPTICAL, "qa": Temperament.SKEPTICAL,
+    "design": Temperament.CREATIVE, "creative": Temperament.CREATIVE,
+    "ux": Temperament.CREATIVE, "lead": Temperament.DIPLOMATIC,
+    "manage": Temperament.DIPLOMATIC, "product": Temperament.DIPLOMATIC,
+    "vision": Temperament.VISIONARY, "strategy": Temperament.VISIONARY,
+    "build": Temperament.PRAGMATIC, "ship": Temperament.PRAGMATIC,
+    "ops": Temperament.PRAGMATIC, "devops": Temperament.PRAGMATIC,
+}
+
+_CUSTOM_COLORS = [
+    "#c27ba0", "#76a5af", "#d5a6bd", "#a4c2f4",
+    "#b6d7a8", "#ffe599", "#ea9999", "#d9d2e9",
+]
 
 
 class SocietyApp(App):
@@ -228,6 +293,7 @@ class SocietyApp(App):
         # Wire up callbacks
         self.society.on_message(self._handle_message)
         self.society.on_status_change(self._handle_status_change)
+        self.society.on_token(self._handle_token)
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -241,7 +307,7 @@ class SocietyApp(App):
                         yield MemoryPanel()
                 with Horizontal(id="input-area"):
                     yield Input(
-                        placeholder="Ask the society... (/debate <topic> | /ask @agent question | /consensus)",
+                        placeholder="Ask the society... (/help for commands)",
                         id="input-box",
                     )
         yield Footer()
@@ -254,18 +320,14 @@ class SocietyApp(App):
             log.write("A multi-agent system running in your terminal.\n")
             log.write(f"[dim]{len(self.society.agents)} agents spawned and ready.[/dim]")
             log.write("")
-            log.write("[dim]Commands:[/dim]")
-            log.write("  [cyan]/debate <topic>[/cyan]  - Start a multi-round debate")
-            log.write("  [cyan]/ask @name msg[/cyan]   - Ask a specific agent")
-            log.write("  [cyan]/consensus[/cyan]       - Synthesize group consensus")
-            log.write("  [cyan]/memories @name[/cyan]  - View an agent's memories")
-            log.write("  Or just type a question for all agents.\n")
+            log.write("[dim]Type /help for commands, or just ask a question.[/dim]\n")
         except NoMatches:
             pass
 
     def _handle_message(self, message: Message) -> None:
         try:
             conv = self.query_one(ConversationPanel)
+            conv.clear_streaming()
             color = "white"
             if message.agent_name in self.society.agents:
                 color = self.society.agents[message.agent_name].color
@@ -277,6 +339,24 @@ class SocietyApp(App):
         try:
             sidebar = self.query_one(AgentSidebar)
             sidebar.refresh_agents()
+            # Show thinking indicator
+            if status == AgentStatus.THINKING:
+                conv = self.query_one(ConversationPanel)
+                color = "white"
+                if agent_name in self.society.agents:
+                    color = self.society.agents[agent_name].color
+                conv.show_thinking(agent_name, color)
+        except NoMatches:
+            pass
+
+    def _handle_token(self, agent_name: str, token: str) -> None:
+        """Handle a streaming token from an agent."""
+        try:
+            conv = self.query_one(ConversationPanel)
+            color = "white"
+            if agent_name in self.society.agents:
+                color = self.society.agents[agent_name].color
+            conv.stream_token(agent_name, token, color)
         except NoMatches:
             pass
 
@@ -295,12 +375,7 @@ class SocietyApp(App):
             parts = text[6:].split(None, 1)
             if len(parts) == 2:
                 name, question = parts
-                # Find agent by name (case-insensitive)
-                agent_name = None
-                for n in self.society.agents:
-                    if n.lower() == name.lower():
-                        agent_name = n
-                        break
+                agent_name = self._find_agent(name)
                 if agent_name:
                     self._run_ask(question, agent_name)
                 else:
@@ -319,27 +394,60 @@ class SocietyApp(App):
                         break
             else:
                 self.action_cycle_memories()
+        elif text.startswith("/spawn "):
+            role = text[7:].strip()
+            if role:
+                self._tui_spawn(role)
+        elif text.startswith("/remove "):
+            name = text[8:].strip().lstrip("@")
+            if name:
+                self._tui_remove(name)
+        elif text.startswith("/preset"):
+            parts = text.split(None, 1)
+            if len(parts) > 1:
+                self._tui_preset(parts[1].strip())
+            else:
+                self._tui_list_presets()
+        elif text == "/templates":
+            self._tui_templates()
+        elif text == "/help":
+            self._tui_help()
         else:
             # General question to all agents
             self._run_ask(text)
 
+    def _find_agent(self, name: str) -> str | None:
+        """Case-insensitive agent lookup."""
+        for n in self.society.agents:
+            if n.lower() == name.lower():
+                return n
+        return None
+
     @work(thread=False)
     async def _run_ask(self, question: str, agent_name: str | None = None) -> None:
-        await self.society.ask(question, agent_name)
+        await self.society.ask(question, agent_name, stream=True)
 
     @work(thread=False)
     async def _run_debate(self, topic: str) -> None:
-        await self.society.debate(topic, rounds=3)
+        await self.society.debate(topic, rounds=3, stream=True)
 
     @work(thread=False)
     async def _run_consensus(self) -> None:
-        await self.society.consensus("the current discussion")
+        await self.society.consensus("the current discussion", stream=True)
 
     def _show_error(self, text: str) -> None:
         try:
             conv = self.query_one(ConversationPanel)
             log = conv.query_one("#conversation-log", RichLog)
             log.write(f"[bold red]{text}[/bold red]")
+        except NoMatches:
+            pass
+
+    def _show_info(self, text: str) -> None:
+        try:
+            conv = self.query_one(ConversationPanel)
+            log = conv.query_one("#conversation-log", RichLog)
+            log.write(text)
         except NoMatches:
             pass
 
@@ -351,6 +459,130 @@ class SocietyApp(App):
             tabs.active = "tab-mem"
         except NoMatches:
             pass
+
+    # --- TUI agent management ---
+
+    def _tui_spawn(self, role: str) -> None:
+        """Spawn an agent from within the TUI."""
+        if role.lower() in AGENT_TEMPLATES:
+            template_config = AGENT_TEMPLATES[role.lower()]
+            if template_config.name in self.society.agents:
+                self._show_error(f"{template_config.name} is already spawned.")
+                return
+            agent = self.society.spawn(template_name=role.lower())
+        else:
+            existing_names = set(self.society.agents.keys())
+            name = role.strip().split()[0].capitalize()
+            if name in existing_names:
+                for i in range(2, 100):
+                    if f"{name}{i}" not in existing_names:
+                        name = f"{name}{i}"
+                        break
+
+            # Pick temperament from keywords
+            temperament = Temperament.ANALYTICAL
+            lower = role.lower()
+            for keyword, temp in _TEMPERAMENT_HINTS.items():
+                if keyword in lower:
+                    temperament = temp
+                    break
+
+            config = AgentConfig(
+                name=name,
+                role=role.title(),
+                temperament=temperament,
+                goals=[f"Provide expert {role.lower()} perspective"],
+                backstory=f"A knowledgeable {role.lower()} contributing to group discussions.",
+                color=_CUSTOM_COLORS[len(self.society.agents) % len(_CUSTOM_COLORS)],
+            )
+            agent = self.society.spawn(config=config)
+
+        # Rebuild sidebar
+        try:
+            sidebar = self.query_one(AgentSidebar)
+            sidebar.rebuild()
+        except NoMatches:
+            pass
+        self._show_info(
+            f"[bold {agent.color}]Spawned {agent.name}[/bold {agent.color}] "
+            f"— {agent.config.role} ({agent.config.temperament.value})"
+        )
+
+    def _tui_remove(self, name: str) -> None:
+        """Remove an agent from within the TUI."""
+        agent_key = self._find_agent(name)
+        if not agent_key:
+            self._show_error(f"Agent '{name}' not found.")
+            return
+        removed = self.society.agents.pop(agent_key)
+        try:
+            sidebar = self.query_one(AgentSidebar)
+            sidebar.rebuild()
+        except NoMatches:
+            pass
+        self._show_info(f"[bold {removed.color}]{removed.name}[/bold {removed.color}] removed.")
+
+    def _tui_preset(self, name: str) -> None:
+        """Activate a preset from within the TUI."""
+        if name.lower() not in PRESETS:
+            self._show_error(f"Unknown preset '{name}'. Available: {', '.join(PRESETS.keys())}")
+            return
+        # Clear and rebuild
+        self.society.agents.clear()
+        self.society.conversation.clear()
+        for config in PRESETS[name.lower()]:
+            self.society.spawn(config=config.model_copy())
+        try:
+            sidebar = self.query_one(AgentSidebar)
+            sidebar.rebuild()
+        except NoMatches:
+            pass
+        agents = ", ".join(a.name for a in self.society.agents.values())
+        self._show_info(f"[bold green]Preset '{name}' activated![/bold green] Agents: {agents}")
+
+    def _tui_list_presets(self) -> None:
+        """List available presets in the conversation panel."""
+        lines = ["[bold]Available Presets:[/bold]"]
+        for name, configs in PRESETS.items():
+            agents = ", ".join(c.name for c in configs)
+            lines.append(f"  [cyan]{name}[/cyan] — {agents}")
+        self._show_info("\n".join(lines))
+
+    def _tui_templates(self) -> None:
+        """Show templates in the conversation panel."""
+        lines = ["[bold]Agent Templates:[/bold]"]
+        for key, config in AGENT_TEMPLATES.items():
+            lines.append(
+                f"  [cyan]{key}[/cyan] — {config.name} ({config.role}, {config.temperament.value})"
+            )
+        lines.append("")
+        lines.append("[bold]Presets:[/bold]")
+        for name, configs in PRESETS.items():
+            agents = ", ".join(c.name for c in configs)
+            lines.append(f"  [cyan]{name}[/cyan] — {agents}")
+        self._show_info("\n".join(lines))
+
+    def _tui_help(self) -> None:
+        """Show help in the conversation panel."""
+        self._show_info("\n".join([
+            "",
+            "[bold]Commands:[/bold]",
+            "  [cyan]/ask @name msg[/cyan]     Ask a specific agent",
+            "  [cyan]/debate <topic>[/cyan]    Start a multi-round debate",
+            "  [cyan]/consensus[/cyan]         Synthesize group consensus",
+            "  [cyan]/memories @name[/cyan]    View agent memories",
+            "  [cyan]/spawn <role>[/cyan]      Spawn a new agent",
+            "  [cyan]/remove @name[/cyan]      Remove an agent",
+            "  [cyan]/preset <name>[/cyan]     Activate a preset team",
+            "  [cyan]/templates[/cyan]         List templates and presets",
+            "  [cyan]/help[/cyan]              Show this help",
+            "",
+            "  Or just type a question for all agents.",
+            "",
+            "[bold]Shortcuts:[/bold]",
+            "  [dim]Ctrl+D[/dim] Debate  [dim]Ctrl+S[/dim] Consensus  [dim]Ctrl+M[/dim] Cycle Memories  [dim]Ctrl+Q[/dim] Quit",
+            "",
+        ]))
 
     def action_start_debate(self) -> None:
         """Triggered by Ctrl+D binding."""

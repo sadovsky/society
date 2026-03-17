@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Callable
 
-from society.llm import generate_response
+from society.llm import generate_response, generate_response_stream
 from society.models import (
     AGENT_TEMPLATES,
     Agent,
@@ -23,12 +23,17 @@ class Society:
         self.conversation: list[Message] = []
         self._on_message: Callable[[Message], None] | None = None
         self._on_status_change: Callable[[str, AgentStatus], None] | None = None
+        self._on_token: Callable[[str, str], None] | None = None
 
     def on_message(self, callback: Callable[[Message], None]) -> None:
         self._on_message = callback
 
     def on_status_change(self, callback: Callable[[str, AgentStatus], None]) -> None:
         self._on_status_change = callback
+
+    def on_token(self, callback: Callable[[str, str], None]) -> None:
+        """Register a callback for streaming tokens: (agent_name, token)."""
+        self._on_token = callback
 
     def spawn(self, template_name: str | None = None, config: AgentConfig | None = None) -> Agent:
         """Spawn a new agent from a template or custom config."""
@@ -65,7 +70,24 @@ class Society:
         if self._on_message:
             self._on_message(message)
 
-    async def ask(self, question: str, agent_name: str | None = None, model: str | None = None) -> list[Message]:
+    async def _generate(self, agent: Agent, prompt: str, model: str | None = None, stream: bool = False) -> str:
+        """Generate a response, optionally streaming tokens."""
+        extra = {"model": model} if model else {}
+        if stream and self._on_token:
+            agent_name = agent.name
+            def token_cb(token: str) -> None:
+                self._on_token(agent_name, token)
+            self._set_status(agent.name, AgentStatus.SPEAKING)
+            return await generate_response_stream(
+                agent, self.conversation, prompt, on_token=token_cb, **extra
+            )
+        else:
+            return await generate_response(agent, self.conversation, prompt, **extra)
+
+    async def ask(
+        self, question: str, agent_name: str | None = None,
+        model: str | None = None, stream: bool = False,
+    ) -> list[Message]:
         """Ask a question to one or all agents."""
         targets = (
             [self.agents[agent_name]] if agent_name else list(self.agents.values())
@@ -79,8 +101,7 @@ class Society:
         for agent in targets:
             self._set_status(agent.name, AgentStatus.THINKING)
             try:
-                extra = {"model": model} if model else {}
-                text = await generate_response(agent, self.conversation, question, **extra)
+                text = await self._generate(agent, question, model=model, stream=stream)
                 msg = Message(agent_name=agent.name, content=text)
                 self._emit_message(msg)
                 responses.append(msg)
@@ -98,7 +119,10 @@ class Society:
 
         return responses
 
-    async def debate(self, topic: str, rounds: int = 3, model: str | None = None) -> list[Message]:
+    async def debate(
+        self, topic: str, rounds: int = 3,
+        model: str | None = None, stream: bool = False,
+    ) -> list[Message]:
         """Run a multi-round debate between all agents on a topic."""
         all_messages: list[Message] = []
 
@@ -129,10 +153,7 @@ class Society:
             for agent in agents:
                 self._set_status(agent.name, AgentStatus.THINKING)
                 try:
-                    extra = {"model": model} if model else {}
-                    text = await generate_response(
-                        agent, self.conversation, round_prompt, **extra
-                    )
+                    text = await self._generate(agent, round_prompt, model=model, stream=stream)
                     msg = Message(agent_name=agent.name, content=text)
                     self._emit_message(msg)
                     all_messages.append(msg)
@@ -153,7 +174,9 @@ class Society:
 
         return all_messages
 
-    async def consensus(self, topic: str, model: str | None = None) -> Message | None:
+    async def consensus(
+        self, topic: str, model: str | None = None, stream: bool = False,
+    ) -> Message | None:
         """Ask the facilitator (if present) to synthesize a consensus."""
         facilitator = None
         for agent in self.agents.values():
@@ -175,8 +198,7 @@ class Society:
                 "Identify areas of agreement, remaining disagreements, "
                 "and propose a consensus position."
             )
-            extra = {"model": model} if model else {}
-            text = await generate_response(facilitator, self.conversation, prompt, **extra)
+            text = await self._generate(facilitator, prompt, model=model, stream=stream)
             msg = Message(agent_name=facilitator.name, content=text)
             self._emit_message(msg)
             return msg

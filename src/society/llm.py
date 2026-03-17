@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from typing import Callable
 
 import anthropic
 
@@ -93,3 +94,41 @@ async def generate_response(
         importance=0.6,
     )
     return text
+
+
+async def generate_response_stream(
+    agent: Agent,
+    conversation: list[Message],
+    user_prompt: str | None = None,
+    model: str = "claude-sonnet-4-20250514",
+    on_token: Callable[[str], None] | None = None,
+) -> str:
+    """Generate a response with streaming, calling on_token for each chunk."""
+    client = get_client()
+
+    system = agent.config.system_prompt()
+    memory_ctx = agent.memory_context()
+    if memory_ctx:
+        system += "\n\n" + memory_ctx
+
+    messages = build_messages(agent, conversation, user_prompt)
+
+    full_text = ""
+    with client.messages.stream(
+        model=model,
+        max_tokens=1024,
+        system=system,
+        messages=messages,
+    ) as stream:
+        for text in stream.text_stream:
+            full_text += text
+            if on_token:
+                on_token(text)
+
+    agent.message_count += 1
+    agent.add_memory(
+        content=f"I said: {full_text[:200]}",
+        source="conversation",
+        importance=0.6,
+    )
+    return full_text

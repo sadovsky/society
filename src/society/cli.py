@@ -66,6 +66,22 @@ def main() -> None:
     # templates
     subparsers.add_parser("templates", help="List available agent templates and presets")
 
+    # save
+    sp = subparsers.add_parser("save", help="Save current session with a name")
+    sp.add_argument("name", help="Session name")
+
+    # load
+    sp = subparsers.add_parser("load", help="Load a saved session")
+    sp.add_argument("name", help="Session name")
+
+    # sessions
+    subparsers.add_parser("sessions", help="List saved sessions")
+
+    # export
+    sp = subparsers.add_parser("export", help="Export conversation history")
+    sp.add_argument("--format", dest="fmt", choices=["md", "json"], default="md", help="Output format (default: md)")
+    sp.add_argument("--output", "-o", default=None, help="Output file (default: stdout)")
+
     # reset
     subparsers.add_parser("reset", help="Clear session and start fresh")
 
@@ -83,11 +99,15 @@ def main() -> None:
         cmd_ask,
         cmd_consensus,
         cmd_debate,
+        cmd_export,
         cmd_history,
+        cmd_load,
         cmd_memories,
         cmd_preset,
         cmd_remove,
         cmd_reset,
+        cmd_save,
+        cmd_sessions,
         cmd_solve,
         cmd_spawn,
         cmd_status,
@@ -107,6 +127,10 @@ def main() -> None:
         "history": lambda: cmd_history(),
         "memories": lambda: cmd_memories(args.agent),
         "templates": lambda: cmd_templates(),
+        "save": lambda: cmd_save(args.name),
+        "load": lambda: cmd_load(args.name),
+        "sessions": lambda: cmd_sessions(),
+        "export": lambda: cmd_export(fmt=args.fmt, output=args.output),
         "reset": lambda: cmd_reset(),
         "tui": lambda: cmd_tui(),
     }

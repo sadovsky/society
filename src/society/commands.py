@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
@@ -374,6 +375,95 @@ def cmd_templates() -> None:
         agents_str = ", ".join(f"[{c.color}]{c.name}[/{c.color}]" for c in configs)
         preset_table.add_row(preset_name, agents_str)
     console.print(preset_table)
+
+
+def cmd_save(name: str) -> None:
+    """Save the current session to a named slot."""
+    from society.session import save_named_session
+
+    data = load_session()
+    if not data.agents:
+        console.print("[dim]No active session to save.[/dim]")
+        return
+
+    save_named_session(name, data)
+    console.print(
+        f"[bold green]Session saved as '{name}'[/bold green] "
+        f"({len(data.agents)} agents, {len(data.conversation)} messages)"
+    )
+
+
+def cmd_load(name: str) -> None:
+    """Load a named session as the active session."""
+    from society.session import load_named_session
+
+    data = load_named_session(name)
+    if data is None:
+        console.print(f"[bold red]Session '{name}' not found.[/bold red]")
+        from society.session import list_sessions
+
+        saved = list_sessions()
+        if saved:
+            console.print(f"Available: {', '.join(saved)}")
+        return
+
+    save_session(data)
+    console.print(
+        f"[bold green]Loaded '{name}'[/bold green] "
+        f"({len(data.agents)} agents, {len(data.conversation)} messages)"
+    )
+
+
+def cmd_sessions() -> None:
+    """List all saved sessions."""
+    from society.session import list_sessions, load_named_session
+
+    saved = list_sessions()
+    if not saved:
+        console.print("[dim]No saved sessions.[/dim] Use [cyan]society save <name>[/cyan] to save one.")
+        return
+
+    table = Table(title="Saved Sessions")
+    table.add_column("Name", style="bold")
+    table.add_column("Agents", justify="right")
+    table.add_column("Messages", justify="right")
+
+    for name in saved:
+        data = load_named_session(name)
+        if data:
+            table.add_row(name, str(len(data.agents)), str(len(data.conversation)))
+    console.print(table)
+
+
+def cmd_export(fmt: str = "md", output: str | None = None) -> None:
+    """Export conversation history."""
+    data = load_session()
+    if not data.conversation:
+        console.print("[dim]No conversation to export.[/dim]")
+        return
+
+    if fmt == "json":
+        import json
+
+        content = data.model_dump_json(indent=2)
+    else:
+        # Markdown format
+        lines = ["# Society Conversation\n"]
+        if data.agents:
+            lines.append("## Agents\n")
+            for agent in data.agents:
+                lines.append(f"- **{agent.name}** — {agent.config.role} ({agent.config.temperament.value})")
+            lines.append("")
+        lines.append("## Conversation\n")
+        for msg in data.conversation:
+            lines.append(f"**{msg.agent_name}:** {msg.content}\n")
+        content = "\n".join(lines)
+
+    if output:
+        Path(output).write_text(content)
+        console.print(f"[bold green]Exported to {output}[/bold green]")
+    else:
+        console.print(content)
 
 
 def cmd_reset() -> None:
