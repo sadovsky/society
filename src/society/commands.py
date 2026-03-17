@@ -1,0 +1,320 @@
+"""CLI subcommand implementations for Society."""
+
+from __future__ import annotations
+
+import asyncio
+import sys
+
+from rich.console import Console
+from rich.table import Table
+
+from society.models import AGENT_TEMPLATES, AgentConfig, Temperament
+from society.session import load_session, save_session, session_to_society, society_to_session
+
+console = Console()
+
+# Colors for custom agents (rotated when templates are exhausted)
+_CUSTOM_COLORS = [
+    "#c27ba0",  # pink
+    "#76a5af",  # teal
+    "#d5a6bd",  # mauve
+    "#a4c2f4",  # light blue
+    "#b6d7a8",  # light green
+    "#ffe599",  # yellow
+    "#ea9999",  # salmon
+    "#d9d2e9",  # lavender
+]
+
+# Heuristic mapping of keywords to temperaments for custom agents
+_TEMPERAMENT_HINTS: dict[str, Temperament] = {
+    "security": Temperament.SKEPTICAL,
+    "review": Temperament.SKEPTICAL,
+    "test": Temperament.SKEPTICAL,
+    "qa": Temperament.SKEPTICAL,
+    "audit": Temperament.SKEPTICAL,
+    "design": Temperament.CREATIVE,
+    "creative": Temperament.CREATIVE,
+    "art": Temperament.CREATIVE,
+    "ux": Temperament.CREATIVE,
+    "lead": Temperament.DIPLOMATIC,
+    "manage": Temperament.DIPLOMATIC,
+    "facilitate": Temperament.DIPLOMATIC,
+    "product": Temperament.DIPLOMATIC,
+    "vision": Temperament.VISIONARY,
+    "strategy": Temperament.VISIONARY,
+    "future": Temperament.VISIONARY,
+    "build": Temperament.PRAGMATIC,
+    "ship": Temperament.PRAGMATIC,
+    "ops": Temperament.PRAGMATIC,
+    "devops": Temperament.PRAGMATIC,
+    "infra": Temperament.PRAGMATIC,
+}
+
+
+def _pick_temperament(role: str) -> Temperament:
+    """Pick a temperament based on role keywords."""
+    lower = role.lower()
+    for keyword, temp in _TEMPERAMENT_HINTS.items():
+        if keyword in lower:
+            return temp
+    return Temperament.ANALYTICAL
+
+
+def _pick_color(existing_count: int) -> str:
+    """Pick a color from the rotation list."""
+    return _CUSTOM_COLORS[existing_count % len(_CUSTOM_COLORS)]
+
+
+def _generate_name(role: str, existing_names: set[str]) -> str:
+    """Generate a display name from a role, avoiding collisions."""
+    # Capitalize first word as the name
+    name = role.strip().split()[0].capitalize()
+    if name not in existing_names:
+        return name
+    # Append numbers to resolve collisions
+    for i in range(2, 100):
+        candidate = f"{name}{i}"
+        if candidate not in existing_names:
+            return candidate
+    return name
+
+
+def _require_agents(agent_count: int) -> bool:
+    """Print error and return False if no agents are spawned."""
+    if agent_count == 0:
+        console.print("[bold red]No agents spawned.[/bold red] Run [cyan]society spawn <role>[/cyan] first.")
+        return False
+    return True
+
+
+def cmd_spawn(role_or_template: str) -> None:
+    """Spawn an agent from a template or custom role description."""
+    data = load_session()
+    society = session_to_society(data)
+
+    if role_or_template.lower() in AGENT_TEMPLATES:
+        template_key = role_or_template.lower()
+        # Check if this template's agent already exists
+        template_config = AGENT_TEMPLATES[template_key]
+        if template_config.name in society.agents:
+            console.print(f"[yellow]{template_config.name} is already spawned.[/yellow]")
+            return
+        agent = society.spawn(template_name=template_key)
+    else:
+        existing_names = set(society.agents.keys())
+        name = _generate_name(role_or_template, existing_names)
+        config = AgentConfig(
+            name=name,
+            role=role_or_template.title(),
+            temperament=_pick_temperament(role_or_template),
+            goals=[f"Provide expert {role_or_template.lower()} perspective"],
+            backstory=f"A knowledgeable {role_or_template.lower()} contributing to group discussions.",
+            color=_pick_color(len(society.agents)),
+        )
+        agent = society.spawn(config=config)
+
+    save_session(society_to_session(society))
+    console.print(
+        f"[bold {agent.color}]Spawned {agent.name}[/bold {agent.color}] "
+        f"— {agent.config.role} ({agent.config.temperament.value})"
+    )
+
+
+def cmd_solve(question: str) -> None:
+    """Ask all agents a question."""
+    data = load_session()
+    society = session_to_society(data)
+    if not _require_agents(len(society.agents)):
+        return
+
+    def print_message(msg):
+        if msg.agent_name == "You":
+            console.print(f"\n[bold cyan]You:[/bold cyan] {msg.content}")
+        else:
+            agent = society.agents.get(msg.agent_name)
+            color = agent.color if agent else "white"
+            console.print(f"\n[bold {color}]{msg.agent_name}:[/bold {color}] {msg.content}")
+
+    society.on_message(print_message)
+    asyncio.run(society.ask(question))
+    save_session(society_to_session(society))
+
+
+def cmd_ask(agent_ref: str, question: str) -> None:
+    """Ask a specific agent a question."""
+    data = load_session()
+    society = session_to_society(data)
+    if not _require_agents(len(society.agents)):
+        return
+
+    # Strip leading @ if present
+    name = agent_ref.lstrip("@")
+    # Case-insensitive lookup
+    agent_name = None
+    for n in society.agents:
+        if n.lower() == name.lower():
+            agent_name = n
+            break
+
+    if not agent_name:
+        console.print(f"[bold red]Agent '{name}' not found.[/bold red]")
+        console.print(f"Available: {', '.join(society.agents.keys())}")
+        return
+
+    def print_message(msg):
+        if msg.agent_name == "You":
+            console.print(f"\n[bold cyan]You:[/bold cyan] {msg.content}")
+        else:
+            agent = society.agents.get(msg.agent_name)
+            color = agent.color if agent else "white"
+            console.print(f"\n[bold {color}]{msg.agent_name}:[/bold {color}] {msg.content}")
+
+    society.on_message(print_message)
+    asyncio.run(society.ask(question, agent_name))
+    save_session(society_to_session(society))
+
+
+def cmd_debate(topic: str, rounds: int = 3) -> None:
+    """Run a multi-round debate between all agents."""
+    data = load_session()
+    society = session_to_society(data)
+    if not _require_agents(len(society.agents)):
+        return
+
+    console.print(f"\n[bold]Debate:[/bold] {topic} ({rounds} rounds)\n")
+
+    def print_message(msg):
+        if msg.agent_name == "You":
+            console.print(f"[dim]{msg.content}[/dim]")
+        else:
+            agent = society.agents.get(msg.agent_name)
+            color = agent.color if agent else "white"
+            console.print(f"\n[bold {color}]{msg.agent_name}:[/bold {color}] {msg.content}")
+
+    society.on_message(print_message)
+    asyncio.run(society.debate(topic, rounds=rounds))
+    save_session(society_to_session(society))
+
+
+def cmd_consensus() -> None:
+    """Synthesize group consensus from current conversation."""
+    data = load_session()
+    society = session_to_society(data)
+    if not _require_agents(len(society.agents)):
+        return
+
+    if not society.conversation:
+        console.print("[yellow]No conversation yet.[/yellow] Run [cyan]society solve[/cyan] or [cyan]society debate[/cyan] first.")
+        return
+
+    def print_message(msg):
+        agent = society.agents.get(msg.agent_name)
+        color = agent.color if agent else "white"
+        console.print(f"\n[bold {color}]{msg.agent_name} (consensus):[/bold {color}] {msg.content}")
+
+    society.on_message(print_message)
+    asyncio.run(society.consensus("the current discussion"))
+    save_session(society_to_session(society))
+
+
+def cmd_status() -> None:
+    """Show current agents and session stats."""
+    data = load_session()
+
+    if not data.agents:
+        console.print("[dim]No agents spawned.[/dim] Run [cyan]society spawn <role>[/cyan] to get started.")
+        return
+
+    table = Table(title="Society", show_lines=False)
+    table.add_column("Name", style="bold")
+    table.add_column("Role")
+    table.add_column("Temperament")
+    table.add_column("Memories", justify="right")
+    table.add_column("Messages", justify="right")
+
+    for agent in data.agents:
+        table.add_row(
+            f"[{agent.color}]{agent.name}[/{agent.color}]",
+            agent.config.role,
+            agent.config.temperament.value,
+            str(len(agent.memories)),
+            str(agent.message_count),
+        )
+
+    console.print(table)
+    console.print(f"\n[dim]{len(data.conversation)} messages in conversation history[/dim]")
+
+
+def cmd_history() -> None:
+    """Show conversation history."""
+    data = load_session()
+
+    if not data.conversation:
+        console.print("[dim]No conversation history.[/dim]")
+        return
+
+    # Build a color lookup from agents
+    colors = {a.name: a.color for a in data.agents}
+
+    for msg in data.conversation:
+        if msg.agent_name == "You":
+            console.print(f"\n[bold cyan]You:[/bold cyan] {msg.content}")
+        else:
+            color = colors.get(msg.agent_name, "white")
+            console.print(f"\n[bold {color}]{msg.agent_name}:[/bold {color}] {msg.content}")
+
+
+def cmd_memories(agent_ref: str) -> None:
+    """Show memories for a specific agent."""
+    data = load_session()
+
+    name = agent_ref.lstrip("@")
+    agent = None
+    for a in data.agents:
+        if a.name.lower() == name.lower():
+            agent = a
+            break
+
+    if not agent:
+        console.print(f"[bold red]Agent '{name}' not found.[/bold red]")
+        if data.agents:
+            console.print(f"Available: {', '.join(a.name for a in data.agents)}")
+        return
+
+    memories = agent.recent_memories(20)
+    if not memories:
+        console.print(f"[dim]{agent.name} has no memories yet.[/dim]")
+        return
+
+    console.print(f"[bold {agent.color}]{agent.name}'s Memories[/bold {agent.color}]\n")
+    for m in memories:
+        importance = "!" * int(m.importance * 5)
+        console.print(f"  [{m.source}] {importance} {m.summary()}")
+
+
+def cmd_reset() -> None:
+    """Clear the current session."""
+    from society.session import SESSION_FILE
+
+    if SESSION_FILE.exists():
+        SESSION_FILE.unlink()
+        console.print("[bold]Session cleared.[/bold]")
+    else:
+        console.print("[dim]No active session.[/dim]")
+
+
+def cmd_tui() -> None:
+    """Launch the Textual TUI dashboard, loading session state."""
+    from society.app import SocietyApp
+
+    data = load_session()
+    if data.agents:
+        society = session_to_society(data)
+        app = SocietyApp(society=society)
+    else:
+        app = SocietyApp()
+
+    app.run()
+
+    # Save state on TUI exit
+    save_session(society_to_session(app.society))

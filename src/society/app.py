@@ -216,10 +216,13 @@ class SocietyApp(App):
         Binding("ctrl+m", "cycle_memories", "Memories"),
     ]
 
-    def __init__(self) -> None:
+    def __init__(self, society: Society | None = None) -> None:
         super().__init__()
-        self.society = Society()
-        self.society.spawn_default_society()
+        if society is not None:
+            self.society = society
+        else:
+            self.society = Society()
+            self.society.spawn_default_society()
         self._memory_agent_idx = 0
 
         # Wire up callbacks
