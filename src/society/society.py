@@ -24,6 +24,7 @@ class Society:
         self._on_message: Callable[[Message], None] | None = None
         self._on_status_change: Callable[[str, AgentStatus], None] | None = None
         self._on_token: Callable[[str, str], None] | None = None
+        self._on_debate_progress: Callable[[int, int, str], None] | None = None
 
     def on_message(self, callback: Callable[[Message], None]) -> None:
         self._on_message = callback
@@ -34,6 +35,10 @@ class Society:
     def on_token(self, callback: Callable[[str, str], None]) -> None:
         """Register a callback for streaming tokens: (agent_name, token)."""
         self._on_token = callback
+
+    def on_debate_progress(self, callback: Callable[[int, int, str], None]) -> None:
+        """Register callback for debate progress: (round_num, total_rounds, phase)."""
+        self._on_debate_progress = callback
 
     def spawn(self, template_name: str | None = None, config: AgentConfig | None = None) -> Agent:
         """Spawn a new agent from a template or custom config."""
@@ -136,6 +141,16 @@ class Society:
         agents = list(self.agents.values())
 
         for round_num in range(rounds):
+            # Emit debate progress
+            if round_num == 0:
+                phase = "Opening positions"
+            elif round_num == rounds - 1:
+                phase = "Final summaries"
+            else:
+                phase = "Responses"
+            if self._on_debate_progress:
+                self._on_debate_progress(round_num + 1, rounds, phase)
+
             round_prompt = None
             if round_num == 0:
                 round_prompt = f"Share your initial position on: {topic}"
@@ -171,6 +186,10 @@ class Society:
                 source="observation",
                 importance=0.8,
             )
+
+        # Signal debate complete
+        if self._on_debate_progress:
+            self._on_debate_progress(rounds, rounds, "Complete")
 
         return all_messages
 

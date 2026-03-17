@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 
 from textual import on, work
 from textual.app import App, ComposeResult
@@ -105,6 +106,9 @@ class AgentSidebar(Widget):
         margin-bottom: 1;
         color: $accent;
     }
+    AgentSidebar #agent-scroll {
+        height: 1fr;
+    }
     """
 
     def __init__(self, society: Society) -> None:
@@ -113,8 +117,9 @@ class AgentSidebar(Widget):
 
     def compose(self) -> ComposeResult:
         yield Label("AGENTS", classes="sidebar-title")
-        for agent in self.society.agents.values():
-            yield AgentCard(agent)
+        with VerticalScroll(id="agent-scroll"):
+            for agent in self.society.agents.values():
+                yield AgentCard(agent)
 
     def refresh_agents(self) -> None:
         for card in self.query(AgentCard):
@@ -122,10 +127,20 @@ class AgentSidebar(Widget):
 
     def rebuild(self) -> None:
         """Remove all agent cards and re-compose from current society state."""
-        for card in self.query(AgentCard):
-            card.remove()
-        for agent in self.society.agents.values():
-            self.mount(AgentCard(agent))
+        try:
+            scroll = self.query_one("#agent-scroll", VerticalScroll)
+            for card in scroll.query(AgentCard):
+                card.remove()
+            for agent in self.society.agents.values():
+                scroll.mount(AgentCard(agent))
+        except NoMatches:
+            pass
+
+
+def _format_timestamp(ts: float) -> str:
+    """Format a Unix timestamp as a short time string."""
+    dt = datetime.fromtimestamp(ts)
+    return dt.strftime("%-I:%M %p").lower()
 
 
 class ConversationPanel(Widget):
@@ -157,11 +172,12 @@ class ConversationPanel(Widget):
     def add_message(self, message: Message, color: str = "white") -> None:
         try:
             log = self.query_one("#conversation-log", RichLog)
+            ts = _format_timestamp(message.timestamp)
             if message.agent_name == "You":
-                log.write(f"\n[bold cyan]You:[/bold cyan] {message.content}")
+                log.write(f"\n[dim]{ts}[/dim] [bold cyan]You:[/bold cyan] {message.content}")
             else:
                 log.write(
-                    f"\n[bold {color}]{message.agent_name}:[/bold {color}] {message.content}"
+                    f"\n[dim]{ts}[/dim] [bold {color}]{message.agent_name}:[/bold {color}] {message.content}"
                 )
         except NoMatches:
             pass
@@ -171,6 +187,15 @@ class ConversationPanel(Widget):
         try:
             streaming = self.query_one("#streaming-msg", Static)
             streaming.update(f"[dim {color}]{agent_name} is thinking...[/dim {color}]")
+        except NoMatches:
+            pass
+
+    def show_debate_progress(self, round_num: int, total: int, phase: str) -> None:
+        """Show debate round progress."""
+        try:
+            streaming = self.query_one("#streaming-msg", Static)
+            bar = "=" * round_num + "-" * (total - round_num)
+            streaming.update(f"[bold]Debate[/bold] [{bar}] Round {round_num}/{total} — {phase}")
         except NoMatches:
             pass
 
@@ -294,6 +319,13 @@ class SocietyApp(App):
         self.society.on_message(self._handle_message)
         self.society.on_status_change(self._handle_status_change)
         self.society.on_token(self._handle_token)
+        self.society.on_debate_progress(self._handle_debate_progress)
+
+    def _update_subtitle(self) -> None:
+        """Update subtitle with agent count and session info."""
+        count = len(self.society.agents)
+        msgs = len(self.society.conversation)
+        self.sub_title = f"{count} agents | {msgs} messages"
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -313,6 +345,7 @@ class SocietyApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
+        self._update_subtitle()
         try:
             conv = self.query_one(ConversationPanel)
             log = conv.query_one("#conversation-log", RichLog)
@@ -332,6 +365,7 @@ class SocietyApp(App):
             if message.agent_name in self.society.agents:
                 color = self.society.agents[message.agent_name].color
             conv.add_message(message, color)
+            self._update_subtitle()
         except NoMatches:
             pass
 
@@ -357,6 +391,18 @@ class SocietyApp(App):
             if agent_name in self.society.agents:
                 color = self.society.agents[agent_name].color
             conv.stream_token(agent_name, token, color)
+        except NoMatches:
+            pass
+
+    def _handle_debate_progress(self, round_num: int, total: int, phase: str) -> None:
+        """Handle debate round progress."""
+        try:
+            conv = self.query_one(ConversationPanel)
+            if phase == "Complete":
+                conv.clear_streaming()
+                self.notify("Debate complete!", title="Society", timeout=4)
+            else:
+                conv.show_debate_progress(round_num, total, phase)
         except NoMatches:
             pass
 
@@ -426,6 +472,7 @@ class SocietyApp(App):
     @work(thread=False)
     async def _run_ask(self, question: str, agent_name: str | None = None) -> None:
         await self.society.ask(question, agent_name, stream=True)
+        self.notify("Response complete", timeout=3)
 
     @work(thread=False)
     async def _run_debate(self, topic: str) -> None:
@@ -434,6 +481,7 @@ class SocietyApp(App):
     @work(thread=False)
     async def _run_consensus(self) -> None:
         await self.society.consensus("the current discussion", stream=True)
+        self.notify("Consensus synthesized", timeout=3)
 
     def _show_error(self, text: str) -> None:
         try:
@@ -497,12 +545,13 @@ class SocietyApp(App):
             )
             agent = self.society.spawn(config=config)
 
-        # Rebuild sidebar
+        # Rebuild sidebar and update subtitle
         try:
             sidebar = self.query_one(AgentSidebar)
             sidebar.rebuild()
         except NoMatches:
             pass
+        self._update_subtitle()
         self._show_info(
             f"[bold {agent.color}]Spawned {agent.name}[/bold {agent.color}] "
             f"— {agent.config.role} ({agent.config.temperament.value})"
@@ -520,6 +569,7 @@ class SocietyApp(App):
             sidebar.rebuild()
         except NoMatches:
             pass
+        self._update_subtitle()
         self._show_info(f"[bold {removed.color}]{removed.name}[/bold {removed.color}] removed.")
 
     def _tui_preset(self, name: str) -> None:
@@ -537,6 +587,7 @@ class SocietyApp(App):
             sidebar.rebuild()
         except NoMatches:
             pass
+        self._update_subtitle()
         agents = ", ".join(a.name for a in self.society.agents.values())
         self._show_info(f"[bold green]Preset '{name}' activated![/bold green] Agents: {agents}")
 
