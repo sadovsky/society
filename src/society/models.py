@@ -166,3 +166,38 @@ AGENT_TEMPLATES: dict[str, AgentConfig] = {
         color="#b4a7d6",
     ),
 }
+
+# Pre-built agent presets — curated teams for common scenarios
+PRESETS: dict[str, list[AgentConfig]] = {
+    "software": [
+        AGENT_TEMPLATES["architect"],
+        AGENT_TEMPLATES["critic"],
+        AGENT_TEMPLATES["creative"],
+        AGENT_TEMPLATES["pragmatist"],
+        AGENT_TEMPLATES["facilitator"],
+    ],
+    "review": [
+        AGENT_TEMPLATES["architect"],
+        AGENT_TEMPLATES["critic"],
+        AgentConfig(
+            name="Shield",
+            role="Security Analyst",
+            temperament=Temperament.SKEPTICAL,
+            goals=["Identify security vulnerabilities", "Assess threat models", "Ensure secure defaults"],
+            backstory="A vigilant security specialist who assumes every system can be compromised.",
+            color="#c27ba0",
+        ),
+    ],
+    "brainstorm": [
+        AGENT_TEMPLATES["creative"],
+        AGENT_TEMPLATES["facilitator"],
+        AgentConfig(
+            name="Zara",
+            role="Visionary Strategist",
+            temperament=Temperament.VISIONARY,
+            goals=["See the big picture", "Identify emerging trends", "Challenge conventional thinking"],
+            backstory="A forward-thinking strategist who connects dots others don't see.",
+            color="#76a5af",
+        ),
+    ],
+}

@@ -16,12 +16,25 @@ def main() -> None:
         action="version",
         version="society 0.1.0",
     )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="Claude model to use (e.g. claude-opus-4-20250514, claude-haiku-4-5-20251001)",
+    )
 
     subparsers = parser.add_subparsers(dest="command")
 
     # spawn
     sp = subparsers.add_parser("spawn", help="Spawn an agent (template name or custom role)")
     sp.add_argument("role", help="Template name (architect, critic, etc.) or custom role description")
+
+    # preset
+    sp = subparsers.add_parser("preset", help="Spawn a preset team of agents")
+    sp.add_argument("name", nargs="?", default=None, help="Preset name (software, review, brainstorm)")
+
+    # remove
+    sp = subparsers.add_parser("remove", help="Remove an agent from the society")
+    sp.add_argument("agent", help="Agent name (e.g. Rex or @Rex)")
 
     # solve
     sp = subparsers.add_parser("solve", help="Ask all agents a question")
@@ -50,6 +63,9 @@ def main() -> None:
     sp = subparsers.add_parser("memories", help="Show an agent's memories")
     sp.add_argument("agent", help="Agent name (e.g. @Aria)")
 
+    # templates
+    subparsers.add_parser("templates", help="List available agent templates and presets")
+
     # reset
     subparsers.add_parser("reset", help="Clear session and start fresh")
 
@@ -69,22 +85,28 @@ def main() -> None:
         cmd_debate,
         cmd_history,
         cmd_memories,
+        cmd_preset,
+        cmd_remove,
         cmd_reset,
         cmd_solve,
         cmd_spawn,
         cmd_status,
+        cmd_templates,
         cmd_tui,
     )
 
     dispatch = {
         "spawn": lambda: cmd_spawn(args.role),
-        "solve": lambda: cmd_solve(args.question),
-        "ask": lambda: cmd_ask(args.agent, args.question),
-        "debate": lambda: cmd_debate(args.topic, args.rounds),
-        "consensus": lambda: cmd_consensus(),
+        "preset": lambda: cmd_preset(args.name),
+        "remove": lambda: cmd_remove(args.agent),
+        "solve": lambda: cmd_solve(args.question, model=args.model),
+        "ask": lambda: cmd_ask(args.agent, args.question, model=args.model),
+        "debate": lambda: cmd_debate(args.topic, args.rounds, model=args.model),
+        "consensus": lambda: cmd_consensus(model=args.model),
         "status": lambda: cmd_status(),
         "history": lambda: cmd_history(),
         "memories": lambda: cmd_memories(args.agent),
+        "templates": lambda: cmd_templates(),
         "reset": lambda: cmd_reset(),
         "tui": lambda: cmd_tui(),
     }

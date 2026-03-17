@@ -8,7 +8,7 @@ import sys
 from rich.console import Console
 from rich.table import Table
 
-from society.models import AGENT_TEMPLATES, AgentConfig, Temperament
+from society.models import AGENT_TEMPLATES, PRESETS, AgentConfig, Temperament
 from society.session import load_session, save_session, session_to_society, society_to_session
 
 console = Console()
@@ -120,7 +120,7 @@ def cmd_spawn(role_or_template: str) -> None:
     )
 
 
-def cmd_solve(question: str) -> None:
+def cmd_solve(question: str, model: str | None = None) -> None:
     """Ask all agents a question."""
     data = load_session()
     society = session_to_society(data)
@@ -136,11 +136,11 @@ def cmd_solve(question: str) -> None:
             console.print(f"\n[bold {color}]{msg.agent_name}:[/bold {color}] {msg.content}")
 
     society.on_message(print_message)
-    asyncio.run(society.ask(question))
+    asyncio.run(society.ask(question, model=model))
     save_session(society_to_session(society))
 
 
-def cmd_ask(agent_ref: str, question: str) -> None:
+def cmd_ask(agent_ref: str, question: str, model: str | None = None) -> None:
     """Ask a specific agent a question."""
     data = load_session()
     society = session_to_society(data)
@@ -170,11 +170,11 @@ def cmd_ask(agent_ref: str, question: str) -> None:
             console.print(f"\n[bold {color}]{msg.agent_name}:[/bold {color}] {msg.content}")
 
     society.on_message(print_message)
-    asyncio.run(society.ask(question, agent_name))
+    asyncio.run(society.ask(question, agent_name, model=model))
     save_session(society_to_session(society))
 
 
-def cmd_debate(topic: str, rounds: int = 3) -> None:
+def cmd_debate(topic: str, rounds: int = 3, model: str | None = None) -> None:
     """Run a multi-round debate between all agents."""
     data = load_session()
     society = session_to_society(data)
@@ -192,11 +192,11 @@ def cmd_debate(topic: str, rounds: int = 3) -> None:
             console.print(f"\n[bold {color}]{msg.agent_name}:[/bold {color}] {msg.content}")
 
     society.on_message(print_message)
-    asyncio.run(society.debate(topic, rounds=rounds))
+    asyncio.run(society.debate(topic, rounds=rounds, model=model))
     save_session(society_to_session(society))
 
 
-def cmd_consensus() -> None:
+def cmd_consensus(model: str | None = None) -> None:
     """Synthesize group consensus from current conversation."""
     data = load_session()
     society = session_to_society(data)
@@ -213,7 +213,7 @@ def cmd_consensus() -> None:
         console.print(f"\n[bold {color}]{msg.agent_name} (consensus):[/bold {color}] {msg.content}")
 
     society.on_message(print_message)
-    asyncio.run(society.consensus("the current discussion"))
+    asyncio.run(society.consensus("the current discussion", model=model))
     save_session(society_to_session(society))
 
 
@@ -290,6 +290,90 @@ def cmd_memories(agent_ref: str) -> None:
     for m in memories:
         importance = "!" * int(m.importance * 5)
         console.print(f"  [{m.source}] {importance} {m.summary()}")
+
+
+def cmd_preset(name: str | None = None) -> None:
+    """Spawn a preset team of agents, replacing any existing session."""
+    if name is None:
+        # List available presets
+        table = Table(title="Available Presets")
+        table.add_column("Name", style="bold")
+        table.add_column("Agents")
+        for preset_name, configs in PRESETS.items():
+            agents_str = ", ".join(f"[{c.color}]{c.name}[/{c.color}]" for c in configs)
+            table.add_row(preset_name, agents_str)
+        console.print(table)
+        return
+
+    if name.lower() not in PRESETS:
+        console.print(f"[bold red]Unknown preset '{name}'.[/bold red]")
+        console.print(f"Available: {', '.join(PRESETS.keys())}")
+        return
+
+    from society.society import Society
+
+    society = Society()
+    for config in PRESETS[name.lower()]:
+        society.spawn(config=config.model_copy())
+
+    save_session(society_to_session(society))
+
+    console.print(f"[bold green]Preset '{name}' activated![/bold green]")
+    for agent in society.agents.values():
+        console.print(
+            f"  [{agent.color}]{agent.name}[/{agent.color}] "
+            f"— {agent.config.role} ({agent.config.temperament.value})"
+        )
+
+
+def cmd_remove(agent_ref: str) -> None:
+    """Remove an agent from the society."""
+    data = load_session()
+    society = session_to_society(data)
+
+    name = agent_ref.lstrip("@")
+    # Case-insensitive lookup
+    agent_key = None
+    for n in society.agents:
+        if n.lower() == name.lower():
+            agent_key = n
+            break
+
+    if not agent_key:
+        console.print(f"[bold red]Agent '{name}' not found.[/bold red]")
+        if society.agents:
+            console.print(f"Available: {', '.join(society.agents.keys())}")
+        return
+
+    removed = society.agents.pop(agent_key)
+    save_session(society_to_session(society))
+    console.print(f"[bold {removed.color}]{removed.name}[/bold {removed.color}] removed.")
+
+
+def cmd_templates() -> None:
+    """List available agent templates and presets."""
+    table = Table(title="Agent Templates")
+    table.add_column("Key", style="bold")
+    table.add_column("Name")
+    table.add_column("Role")
+    table.add_column("Temperament")
+    for key, config in AGENT_TEMPLATES.items():
+        table.add_row(
+            key,
+            f"[{config.color}]{config.name}[/{config.color}]",
+            config.role,
+            config.temperament.value,
+        )
+    console.print(table)
+
+    console.print()
+    preset_table = Table(title="Presets")
+    preset_table.add_column("Name", style="bold")
+    preset_table.add_column("Agents")
+    for preset_name, configs in PRESETS.items():
+        agents_str = ", ".join(f"[{c.color}]{c.name}[/{c.color}]" for c in configs)
+        preset_table.add_row(preset_name, agents_str)
+    console.print(preset_table)
 
 
 def cmd_reset() -> None:

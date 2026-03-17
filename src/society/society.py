@@ -65,7 +65,7 @@ class Society:
         if self._on_message:
             self._on_message(message)
 
-    async def ask(self, question: str, agent_name: str | None = None) -> list[Message]:
+    async def ask(self, question: str, agent_name: str | None = None, model: str | None = None) -> list[Message]:
         """Ask a question to one or all agents."""
         targets = (
             [self.agents[agent_name]] if agent_name else list(self.agents.values())
@@ -79,7 +79,8 @@ class Society:
         for agent in targets:
             self._set_status(agent.name, AgentStatus.THINKING)
             try:
-                text = await generate_response(agent, self.conversation, question)
+                extra = {"model": model} if model else {}
+                text = await generate_response(agent, self.conversation, question, **extra)
                 msg = Message(agent_name=agent.name, content=text)
                 self._emit_message(msg)
                 responses.append(msg)
@@ -97,7 +98,7 @@ class Society:
 
         return responses
 
-    async def debate(self, topic: str, rounds: int = 3) -> list[Message]:
+    async def debate(self, topic: str, rounds: int = 3, model: str | None = None) -> list[Message]:
         """Run a multi-round debate between all agents on a topic."""
         all_messages: list[Message] = []
 
@@ -128,8 +129,9 @@ class Society:
             for agent in agents:
                 self._set_status(agent.name, AgentStatus.THINKING)
                 try:
+                    extra = {"model": model} if model else {}
                     text = await generate_response(
-                        agent, self.conversation, round_prompt
+                        agent, self.conversation, round_prompt, **extra
                     )
                     msg = Message(agent_name=agent.name, content=text)
                     self._emit_message(msg)
@@ -151,7 +153,7 @@ class Society:
 
         return all_messages
 
-    async def consensus(self, topic: str) -> Message | None:
+    async def consensus(self, topic: str, model: str | None = None) -> Message | None:
         """Ask the facilitator (if present) to synthesize a consensus."""
         facilitator = None
         for agent in self.agents.values():
@@ -173,7 +175,8 @@ class Society:
                 "Identify areas of agreement, remaining disagreements, "
                 "and propose a consensus position."
             )
-            text = await generate_response(facilitator, self.conversation, prompt)
+            extra = {"model": model} if model else {}
+            text = await generate_response(facilitator, self.conversation, prompt, **extra)
             msg = Message(agent_name=facilitator.name, content=text)
             self._emit_message(msg)
             return msg
