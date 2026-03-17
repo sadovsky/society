@@ -10,14 +10,19 @@ from society.models import Agent, Message
 
 
 def get_client() -> anthropic.Anthropic:
-    """Get an Anthropic client, raising a clear error if no API key."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
+    """Get an Anthropic client.
+
+    Supports two auth methods (checked automatically by the SDK):
+      - ANTHROPIC_API_KEY: standard API key (x-api-key header)
+      - ANTHROPIC_AUTH_TOKEN: OAuth/bearer token, e.g. from `claude auth print-oauth-token`
+    """
+    if not os.environ.get("ANTHROPIC_API_KEY") and not os.environ.get("ANTHROPIC_AUTH_TOKEN"):
         raise RuntimeError(
-            "ANTHROPIC_API_KEY environment variable is required. "
-            "Set it with: export ANTHROPIC_API_KEY=your-key-here"
+            "No authentication configured. Set one of:\n"
+            "  export ANTHROPIC_API_KEY=sk-ant-...\n"
+            "  export ANTHROPIC_AUTH_TOKEN=$(claude auth print-oauth-token)"
         )
-    return anthropic.Anthropic(api_key=api_key)
+    return anthropic.Anthropic()
 
 
 def build_messages(
