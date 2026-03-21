@@ -23,6 +23,7 @@ from textual.widgets import (
     TabPane,
 )
 
+from society.config import get_config, get_custom_agent_config
 from society.models import AGENT_TEMPLATES, PRESETS, Agent, AgentConfig, AgentStatus, Memory, Message, Temperament
 from society.society import Society
 
@@ -224,6 +225,64 @@ class ConversationPanel(Widget):
             pass
 
 
+class RelationshipPanel(Widget):
+    """Panel showing agent relationship matrix."""
+
+    DEFAULT_CSS = """
+    RelationshipPanel {
+        height: 1fr;
+        border: round $surface-lighten-2;
+        padding: 1;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield RichLog(highlight=True, markup=True, wrap=True, id="relationship-log")
+
+    def show_relationships(self, society: "Society") -> None:
+        try:
+            log = self.query_one("#relationship-log", RichLog)
+            log.clear()
+            agents = list(society.agents.values())
+            if not agents:
+                log.write("[dim]No agents spawned.[/dim]")
+                return
+
+            has_any = any(a.relationships for a in agents)
+            if not has_any:
+                log.write("[dim]No relationships formed yet.[/dim]")
+                log.write("[dim]Run a debate to build agent relationships.[/dim]")
+                return
+
+            log.write("[bold]Agent Relationships[/bold]\n")
+            for agent in agents:
+                if not agent.relationships:
+                    continue
+                log.write(f"[bold {agent.color}]{agent.name}[/bold {agent.color}]")
+                for other_name, score in sorted(
+                    agent.relationships.items(), key=lambda x: x[1], reverse=True
+                ):
+                    bar_len = int(abs(score) * 10)
+                    if score > 0.1:
+                        bar = "[green]" + "+" * bar_len + "[/green]"
+                        label = "ally"
+                    elif score < -0.1:
+                        bar = "[red]" + "-" * bar_len + "[/red]"
+                        label = "rival"
+                    else:
+                        bar = "[dim]" + "~" * max(bar_len, 1) + "[/dim]"
+                        label = "neutral"
+                    other_agent = society.agents.get(other_name)
+                    other_color = other_agent.color if other_agent else "white"
+                    log.write(
+                        f"  {bar} [{other_color}]{other_name}[/{other_color}] "
+                        f"({score:+.2f}, {label})"
+                    )
+                log.write("")
+        except NoMatches:
+            pass
+
+
 class MemoryPanel(Widget):
     """Panel showing agent memories."""
 
@@ -307,6 +366,7 @@ class SocietyApp(App):
         Binding("ctrl+q", "quit", "Quit"),
         Binding("ctrl+d", "start_debate", "Debate"),
         Binding("ctrl+s", "consensus", "Consensus"),
+        Binding("ctrl+r", "show_relationships", "Relationships"),
         Binding("ctrl+m", "cycle_memories", "Memories"),
     ]
 
@@ -316,7 +376,13 @@ class SocietyApp(App):
             self.society = society
         else:
             self.society = Society()
-            self.society.spawn_default_society()
+            # Check for default_preset in config
+            cfg = get_config()
+            if cfg.default_preset and cfg.default_preset.lower() in PRESETS:
+                for config in PRESETS[cfg.default_preset.lower()]:
+                    self.society.spawn(config=config.model_copy())
+            else:
+                self.society.spawn_default_society()
         self._memory_agent_idx = 0
 
         # Wire up callbacks
@@ -339,6 +405,8 @@ class SocietyApp(App):
                 with TabbedContent(id="tabs"):
                     with TabPane("Conversation", id="tab-conv"):
                         yield ConversationPanel()
+                    with TabPane("Relationships", id="tab-rel"):
+                        yield RelationshipPanel()
                     with TabPane("Memories", id="tab-mem"):
                         yield MemoryPanel()
                 with Horizontal(id="input-area"):
@@ -405,6 +473,12 @@ class SocietyApp(App):
             if phase == "Complete":
                 conv.clear_streaming()
                 self.notify("Debate complete!", title="Society", timeout=4)
+                # Auto-refresh relationships after debate
+                try:
+                    rel_panel = self.query_one(RelationshipPanel)
+                    rel_panel.show_relationships(self.society)
+                except NoMatches:
+                    pass
             else:
                 conv.show_debate_progress(round_num, total, phase)
         except NoMatches:
@@ -446,6 +520,19 @@ class SocietyApp(App):
                         break
             else:
                 self.action_cycle_memories()
+        elif text.startswith("/direct @"):
+            # /direct @Aria @Rex topic here
+            parts = text[9:].split(None, 2)
+            if len(parts) >= 3 and parts[1].startswith("@"):
+                from_name = self._find_agent(parts[0])
+                to_name = self._find_agent(parts[1][1:])
+                msg = parts[2]
+                if from_name and to_name:
+                    self._run_direct(from_name, to_name, msg)
+                else:
+                    self._show_error("Agent not found.")
+            else:
+                self._show_error("Usage: /direct @from @to message")
         elif text.startswith("/spawn "):
             role = text[7:].strip()
             if role:
@@ -460,6 +547,8 @@ class SocietyApp(App):
                 self._tui_preset(parts[1].strip())
             else:
                 self._tui_list_presets()
+        elif text == "/relationships":
+            self.action_show_relationships()
         elif text == "/templates":
             self._tui_templates()
         elif text == "/help":
@@ -483,6 +572,11 @@ class SocietyApp(App):
     @work(thread=False)
     async def _run_debate(self, topic: str) -> None:
         await self.society.debate(topic, rounds=3, stream=True)
+
+    @work(thread=False)
+    async def _run_direct(self, from_name: str, to_name: str, message: str) -> None:
+        await self.society.direct(from_name, to_name, message, stream=True)
+        self.notify(f"{from_name} <-> {to_name} conversation complete", timeout=3)
 
     @work(thread=False)
     async def _run_consensus(self) -> None:
@@ -524,6 +618,11 @@ class SocietyApp(App):
                 self._show_error(f"{template_config.name} is already spawned.")
                 return
             agent = self.society.spawn(template_name=role.lower())
+        elif (custom_config := get_custom_agent_config(role.lower())) is not None:
+            if custom_config.name in self.society.agents:
+                self._show_error(f"{custom_config.name} is already spawned.")
+                return
+            agent = self.society.spawn(config=custom_config)
         else:
             existing_names = set(self.society.agents.keys())
             name = role.strip().split()[0].capitalize()
@@ -626,8 +725,10 @@ class SocietyApp(App):
             "[bold]Commands:[/bold]",
             "  [cyan]/ask @name msg[/cyan]     Ask a specific agent",
             "  [cyan]/debate <topic>[/cyan]    Start a multi-round debate",
+            "  [cyan]/direct @a @b msg[/cyan]  Agent-to-agent conversation",
             "  [cyan]/consensus[/cyan]         Synthesize group consensus",
             "  [cyan]/memories @name[/cyan]    View agent memories",
+            "  [cyan]/relationships[/cyan]     View agent relationship map",
             "  [cyan]/spawn <role>[/cyan]      Spawn a new agent",
             "  [cyan]/remove @name[/cyan]      Remove an agent",
             "  [cyan]/preset <name>[/cyan]     Activate a preset team",
@@ -637,7 +738,7 @@ class SocietyApp(App):
             "  Or just type a question for all agents.",
             "",
             "[bold]Shortcuts:[/bold]",
-            "  [dim]Ctrl+D[/dim] Debate  [dim]Ctrl+S[/dim] Consensus  [dim]Ctrl+M[/dim] Cycle Memories  [dim]Ctrl+Q[/dim] Quit",
+            "  [dim]Ctrl+D[/dim] Debate  [dim]Ctrl+S[/dim] Consensus  [dim]Ctrl+R[/dim] Relationships  [dim]Ctrl+M[/dim] Memories  [dim]Ctrl+Q[/dim] Quit",
             "",
         ]))
 
@@ -653,6 +754,16 @@ class SocietyApp(App):
     def action_consensus(self) -> None:
         """Triggered by Ctrl+S binding."""
         self._run_consensus()
+
+    def action_show_relationships(self) -> None:
+        """Show the relationships tab."""
+        try:
+            rel_panel = self.query_one(RelationshipPanel)
+            rel_panel.show_relationships(self.society)
+            tabs = self.query_one(TabbedContent)
+            tabs.active = "tab-rel"
+        except NoMatches:
+            pass
 
     def action_cycle_memories(self) -> None:
         """Cycle through agent memories."""

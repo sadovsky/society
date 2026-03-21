@@ -9,7 +9,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
-from society.config import get_config, init_config
+from society.config import get_config, get_custom_agent_config, init_config
 from society.models import AGENT_TEMPLATES, PRESETS, AgentConfig, Temperament
 from society.session import load_session, save_session, session_to_society, society_to_session
 
@@ -102,6 +102,11 @@ def cmd_spawn(role_or_template: str) -> None:
             console.print(f"[yellow]{template_config.name} is already spawned.[/yellow]")
             return
         agent = society.spawn(template_name=template_key)
+    elif (custom_config := get_custom_agent_config(role_or_template.lower())) is not None:
+        if custom_config.name in society.agents:
+            console.print(f"[yellow]{custom_config.name} is already spawned.[/yellow]")
+            return
+        agent = society.spawn(config=custom_config)
     else:
         existing_names = set(society.agents.keys())
         name = _generate_name(role_or_template, existing_names)
@@ -254,7 +259,7 @@ def cmd_debate(topic: str, rounds: int | None = None, model: str | None = None) 
 
 
 def cmd_consensus(model: str | None = None) -> None:
-    """Synthesize group consensus from current conversation."""
+    """Synthesize group consensus from current conversation with streaming."""
     data = load_session()
     society = session_to_society(data)
     if not _require_agents(len(society.agents)):
@@ -264,13 +269,69 @@ def cmd_consensus(model: str | None = None) -> None:
         console.print("[yellow]No conversation yet.[/yellow] Run [cyan]society solve[/cyan] or [cyan]society debate[/cyan] first.")
         return
 
-    def print_message(msg):
-        agent = society.agents.get(msg.agent_name)
-        color = agent.color if agent else "white"
-        console.print(f"\n[bold {color}]{msg.agent_name} (consensus):[/bold {color}] {msg.content}")
+    _header_printed = {"done": False}
 
-    society.on_message(print_message)
-    asyncio.run(society.consensus("the current discussion", model=model))
+    def on_token(agent_name, token):
+        if not _header_printed["done"]:
+            agent = society.agents.get(agent_name)
+            color = agent.color if agent else "white"
+            console.print(f"\n[bold {color}]{agent_name} (consensus):[/bold {color}] ", end="")
+            _header_printed["done"] = True
+        print(token, end="", flush=True)
+
+    def on_msg(msg):
+        if _header_printed["done"]:
+            console.print()  # newline after stream
+
+    society.on_token(on_token)
+    society.on_message(on_msg)
+    asyncio.run(society.consensus("the current discussion", model=model, stream=True))
+    save_session(society_to_session(society))
+
+
+def cmd_direct(from_ref: str, to_ref: str, message: str, model: str | None = None) -> None:
+    """Have one agent talk directly to another with streaming."""
+    data = load_session()
+    society = session_to_society(data)
+    if not _require_agents(len(society.agents)):
+        return
+
+    from_name = None
+    to_name = None
+    for n in society.agents:
+        if n.lower() == from_ref.lstrip("@").lower():
+            from_name = n
+        if n.lower() == to_ref.lstrip("@").lower():
+            to_name = n
+
+    if not from_name:
+        console.print(f"[bold red]Agent '{from_ref}' not found.[/bold red]")
+        return
+    if not to_name:
+        console.print(f"[bold red]Agent '{to_ref}' not found.[/bold red]")
+        return
+
+    _streaming_buf: dict[str, str] = {"agent": ""}
+
+    def on_token(agent_name, token):
+        if _streaming_buf["agent"] != agent_name:
+            if _streaming_buf["agent"]:
+                console.print()
+            agent = society.agents.get(agent_name)
+            color = agent.color if agent else "white"
+            console.print(f"\n[bold {color}]{agent_name}:[/bold {color}] ", end="")
+            _streaming_buf["agent"] = agent_name
+        print(token, end="", flush=True)
+
+    def on_msg(msg):
+        if msg.agent_name != "You":
+            console.print()
+
+    society.on_token(on_token)
+    society.on_message(on_msg)
+
+    console.print(f"[dim]{from_name} -> {to_name}: {message}[/dim]")
+    asyncio.run(society.direct(from_name, to_name, message, model=model, stream=True))
     save_session(society_to_session(society))
 
 
@@ -442,6 +503,24 @@ def cmd_templates() -> None:
             config.temperament.value,
         )
     console.print(table)
+
+    # Show custom agents from config
+    cfg = get_config()
+    if cfg.custom_agents:
+        console.print()
+        custom_table = Table(title="Custom Agents (from config)")
+        custom_table.add_column("Key", style="bold")
+        custom_table.add_column("Name")
+        custom_table.add_column("Role")
+        custom_table.add_column("Temperament")
+        for key, agent_def in cfg.custom_agents.items():
+            custom_table.add_row(
+                key,
+                f"[{agent_def.color}]{agent_def.name}[/{agent_def.color}]",
+                agent_def.role,
+                agent_def.temperament,
+            )
+        console.print(custom_table)
 
     console.print()
     preset_table = Table(title="Presets")

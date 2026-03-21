@@ -50,6 +50,12 @@ def main() -> None:
     sp.add_argument("topic", help="The debate topic")
     sp.add_argument("--rounds", type=int, default=None, help="Number of rounds (default: from config or 3)")
 
+    # direct
+    sp = subparsers.add_parser("direct", help="Have one agent talk directly to another")
+    sp.add_argument("from_agent", help="Sending agent (e.g. @Aria)")
+    sp.add_argument("to_agent", help="Receiving agent (e.g. @Rex)")
+    sp.add_argument("message", help="Topic or message to discuss")
+
     # consensus
     subparsers.add_parser("consensus", help="Synthesize group consensus")
 
@@ -103,6 +109,7 @@ def main() -> None:
         cmd_ask,
         cmd_consensus,
         cmd_debate,
+        cmd_direct,
         cmd_export,
         cmd_history,
         cmd_init,
@@ -127,6 +134,7 @@ def main() -> None:
         "solve": lambda: cmd_solve(args.question, model=args.model),
         "ask": lambda: cmd_ask(args.agent, args.question, model=args.model),
         "debate": lambda: cmd_debate(args.topic, args.rounds, model=args.model),
+        "direct": lambda: cmd_direct(args.from_agent, args.to_agent, args.message, model=args.model),
         "consensus": lambda: cmd_consensus(model=args.model),
         "status": lambda: cmd_status(),
         "history": lambda: cmd_history(),

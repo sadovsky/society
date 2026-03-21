@@ -27,35 +27,72 @@ def get_client() -> anthropic.Anthropic:
     return anthropic.Anthropic()
 
 
+async def summarize_conversation(
+    messages: list[Message],
+    model: str | None = None,
+) -> str:
+    """Summarize older conversation messages into a compact context string."""
+    client = get_client()
+    cfg = get_config()
+    model = model or cfg.model
+
+    text = "\n".join(f"{m.agent_name}: {m.content[:200]}" for m in messages)
+    response = client.messages.create(
+        model=model,
+        max_tokens=512,
+        system="You are a conversation summarizer. Be concise.",
+        messages=[{
+            "role": "user",
+            "content": (
+                "Summarize the key points, agreements, and disagreements "
+                "from this multi-agent conversation. Keep it under 200 words.\n\n"
+                f"{text}"
+            ),
+        }],
+    )
+    return response.content[0].text
+
+
 def build_messages(
     agent: Agent,
     conversation: list[Message],
     user_prompt: str | None = None,
+    summary: str | None = None,
 ) -> list[dict]:
-    """Build the messages list for the Claude API call."""
-    messages: list[dict] = []
+    """Build the messages list for the Claude API call.
+
+    If a summary is provided, it's prepended as context before recent messages.
+    """
+    messages_list: list[dict] = []
+
+    # Inject summary of older conversation if available
+    if summary:
+        messages_list.append({
+            "role": "user",
+            "content": f"[Summary of earlier discussion]: {summary}",
+        })
 
     # Add conversation history
     for msg in conversation[-20:]:  # Keep last 20 messages for context
         if msg.agent_name == agent.name:
-            messages.append({"role": "assistant", "content": msg.content})
+            messages_list.append({"role": "assistant", "content": msg.content})
         else:
-            messages.append({
+            messages_list.append({
                 "role": "user",
                 "content": f"[{msg.agent_name}]: {msg.content}",
             })
 
     # Add user prompt if provided
     if user_prompt:
-        messages.append({"role": "user", "content": user_prompt})
+        messages_list.append({"role": "user", "content": user_prompt})
 
     # Ensure messages alternate correctly and start with user
-    if not messages or messages[0]["role"] != "user":
-        messages.insert(0, {"role": "user", "content": "[System]: The discussion begins."})
+    if not messages_list or messages_list[0]["role"] != "user":
+        messages_list.insert(0, {"role": "user", "content": "[System]: The discussion begins."})
 
     # Merge consecutive same-role messages
     merged: list[dict] = []
-    for msg in messages:
+    for msg in messages_list:
         if merged and merged[-1]["role"] == msg["role"]:
             merged[-1]["content"] += "\n" + msg["content"]
         else:
@@ -69,6 +106,7 @@ async def generate_response(
     conversation: list[Message],
     user_prompt: str | None = None,
     model: str | None = None,
+    summary: str | None = None,
 ) -> str:
     """Generate a response from an agent using Claude."""
     client = get_client()
@@ -83,7 +121,7 @@ async def generate_response(
     if memory_ctx:
         system += "\n\n" + memory_ctx
 
-    messages = build_messages(agent, conversation, user_prompt)
+    messages = build_messages(agent, conversation, user_prompt, summary=summary)
 
     extra_kwargs = {}
     if cfg.temperature is not None:
@@ -103,6 +141,7 @@ async def generate_response(
         content=f"I said: {text[:200]}",
         source="conversation",
         importance=0.6,
+        memory_limit=cfg.memory_limit,
     )
     return text
 
@@ -113,6 +152,7 @@ async def generate_response_stream(
     user_prompt: str | None = None,
     model: str | None = None,
     on_token: Callable[[str], None] | None = None,
+    summary: str | None = None,
 ) -> str:
     """Generate a response with streaming, calling on_token for each chunk."""
     client = get_client()
@@ -127,7 +167,7 @@ async def generate_response_stream(
     if memory_ctx:
         system += "\n\n" + memory_ctx
 
-    messages = build_messages(agent, conversation, user_prompt)
+    messages = build_messages(agent, conversation, user_prompt, summary=summary)
 
     extra_kwargs = {}
     if cfg.temperature is not None:
@@ -151,6 +191,7 @@ async def generate_response_stream(
         content=f"I said: {full_text[:200]}",
         source="conversation",
         importance=0.6,
+        memory_limit=cfg.memory_limit,
     )
     return full_text
 

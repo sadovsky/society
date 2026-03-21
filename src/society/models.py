@@ -128,13 +128,16 @@ class Agent(BaseModel):
     def color(self) -> str:
         return self.config.color
 
-    def add_memory(self, content: str, source: str = "observation", importance: float = 0.5) -> Memory:
+    def add_memory(
+        self, content: str, source: str = "observation",
+        importance: float = 0.5, memory_limit: int = 100,
+    ) -> Memory:
         memory = Memory(content=content, source=source, importance=importance)
         self.memories.append(memory)
         # Keep memories bounded — evict by effective importance (time-decayed)
-        if len(self.memories) > 100:
+        if len(self.memories) > memory_limit:
             self.memories.sort(key=lambda m: m.effective_importance(), reverse=True)
-            self.memories = self.memories[:80]
+            self.memories = self.memories[: int(memory_limit * 0.8)]
         return memory
 
     def recent_memories(self, n: int = 10) -> list[Memory]:

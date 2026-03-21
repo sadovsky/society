@@ -87,6 +87,28 @@ def get_config() -> SocietyConfig:
     return SocietyConfig.load()
 
 
+def get_custom_agent_config(key: str) -> "AgentConfig | None":
+    """Look up a custom agent from config and return an AgentConfig, or None."""
+    from society.models import AgentConfig, Temperament
+
+    cfg = get_config()
+    if key not in cfg.custom_agents:
+        return None
+    agent_def = cfg.custom_agents[key]
+    try:
+        temperament = Temperament(agent_def.temperament)
+    except ValueError:
+        temperament = Temperament.ANALYTICAL
+    return AgentConfig(
+        name=agent_def.name,
+        role=agent_def.role,
+        temperament=temperament,
+        goals=agent_def.goals,
+        backstory=agent_def.backstory,
+        color=agent_def.color,
+    )
+
+
 def init_config() -> None:
     """Create a default config file if none exists."""
     if CONFIG_FILE.exists():

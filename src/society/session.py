@@ -21,6 +21,7 @@ class SessionData(BaseModel):
     version: int = 1
     agents: list[Agent] = Field(default_factory=list)
     conversation: list[Message] = Field(default_factory=list)
+    conversation_summary: str | None = None
 
 
 def load_session() -> SessionData:
@@ -46,6 +47,7 @@ def session_to_society(data: SessionData) -> Society:
     for agent in data.agents:
         society.agents[agent.name] = agent
     society.conversation = list(data.conversation)
+    society.conversation_summary = data.conversation_summary
     return society
 
 
@@ -54,6 +56,7 @@ def society_to_session(society: Society) -> SessionData:
     return SessionData(
         agents=list(society.agents.values()),
         conversation=list(society.conversation),
+        conversation_summary=society.conversation_summary,
     )
 
 

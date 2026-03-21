@@ -206,6 +206,82 @@ class TestConsensus:
         assert result.agent_name == "Solo"
 
 
+class TestDirect:
+    @pytest.mark.asyncio
+    async def test_direct_conversation(self, society):
+        with patch("society.society.generate_response", new_callable=AsyncMock) as mock_gen:
+            mock_gen.return_value = "I hear you"
+            messages = await society.direct("Aria", "Rex", "Let's discuss architecture")
+
+        assert len(messages) == 2
+        assert messages[0].agent_name == "Aria"
+        assert messages[1].agent_name == "Rex"
+        assert messages[1].reply_to == messages[0].id
+
+    @pytest.mark.asyncio
+    async def test_direct_creates_memories(self, society):
+        with patch("society.society.generate_response", new_callable=AsyncMock) as mock_gen:
+            mock_gen.return_value = "ok"
+            await society.direct("Aria", "Rex", "test topic")
+
+        aria_mems = [m.content for m in society.agents["Aria"].memories]
+        rex_mems = [m.content for m in society.agents["Rex"].memories]
+        assert any("Spoke to Rex" in m for m in aria_mems)
+        assert any("Aria talked to me" in m for m in rex_mems)
+
+    @pytest.mark.asyncio
+    async def test_direct_invalid_agent_raises(self, society):
+        with pytest.raises(ValueError, match="Both agents must exist"):
+            await society.direct("Aria", "Ghost", "test")
+
+
+class TestSummarization:
+    @pytest.mark.asyncio
+    async def test_auto_summarize_triggers(self, society):
+        """When conversation exceeds 40 messages, summarization should trigger."""
+        # Add 45 messages
+        for i in range(45):
+            society.conversation.append(
+                Message(agent_name="Aria" if i % 2 == 0 else "Rex", content=f"msg {i}")
+            )
+
+        with patch("society.society.generate_response", new_callable=AsyncMock) as mock_gen, \
+             patch("society.society.summarize_conversation", new_callable=AsyncMock) as mock_sum:
+            mock_gen.return_value = "response"
+            mock_sum.return_value = "Summary of earlier discussion"
+            await society.ask("test?", agent_name="Aria")
+
+        mock_sum.assert_called_once()
+        assert society.conversation_summary is not None
+        assert "Summary" in society.conversation_summary
+        assert len(society.conversation) <= 25  # trimmed + new messages
+
+    @pytest.mark.asyncio
+    async def test_no_summarize_short_conversation(self, society):
+        """Short conversations should not trigger summarization."""
+        society.conversation.append(Message(agent_name="Aria", content="hello"))
+
+        with patch("society.society.generate_response", new_callable=AsyncMock) as mock_gen, \
+             patch("society.society.summarize_conversation", new_callable=AsyncMock) as mock_sum:
+            mock_gen.return_value = "hi"
+            await society.ask("test?", agent_name="Aria")
+
+        mock_sum.assert_not_called()
+
+    def test_conversation_summary_persists(self):
+        """Summary should survive session roundtrip."""
+        from society.session import session_to_society, society_to_session
+
+        s = Society()
+        s.spawn(template_name="architect")
+        s.conversation_summary = "Previous discussion about microservices"
+
+        data = society_to_session(s)
+        restored = session_to_society(data)
+
+        assert restored.conversation_summary == "Previous discussion about microservices"
+
+
 class TestStreaming:
     @pytest.mark.asyncio
     async def test_ask_with_streaming(self, society):

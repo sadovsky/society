@@ -5,7 +5,13 @@ from __future__ import annotations
 import asyncio
 from typing import Callable
 
-from society.llm import extract_relationship_deltas, generate_reflection, generate_response, generate_response_stream
+from society.llm import (
+    extract_relationship_deltas,
+    generate_reflection,
+    generate_response,
+    generate_response_stream,
+    summarize_conversation,
+)
 from society.models import (
     AGENT_TEMPLATES,
     Agent,
@@ -21,6 +27,7 @@ class Society:
     def __init__(self) -> None:
         self.agents: dict[str, Agent] = {}
         self.conversation: list[Message] = []
+        self.conversation_summary: str | None = None  # Summary of older messages
         self._on_message: Callable[[Message], None] | None = None
         self._on_status_change: Callable[[str, AgentStatus], None] | None = None
         self._on_token: Callable[[str, str], None] | None = None
@@ -75,9 +82,35 @@ class Society:
         if self._on_message:
             self._on_message(message)
 
+    async def _maybe_summarize(self, model: str | None = None) -> None:
+        """If conversation is long, summarize older messages to maintain context."""
+        if len(self.conversation) > 40:
+            # Summarize messages beyond the recent 20
+            older = self.conversation[:-20]
+            try:
+                extra = {"model": model} if model else {}
+                summary = await summarize_conversation(older, **extra)
+                # Prepend to existing summary if any
+                if self.conversation_summary:
+                    self.conversation_summary = (
+                        f"{self.conversation_summary}\n\n"
+                        f"More recent: {summary}"
+                    )
+                else:
+                    self.conversation_summary = summary
+                # Trim older messages now that they're summarized
+                self.conversation = self.conversation[-20:]
+            except Exception:
+                pass  # Summarization failure shouldn't break anything
+
     async def _generate(self, agent: Agent, prompt: str, model: str | None = None, stream: bool = False) -> str:
         """Generate a response, optionally streaming tokens."""
+        # Auto-summarize if conversation is growing long
+        await self._maybe_summarize(model=model)
+
         extra = {"model": model} if model else {}
+        if self.conversation_summary:
+            extra["summary"] = self.conversation_summary
         if stream and self._on_token:
             agent_name = agent.name
             def token_cb(token: str) -> None:
@@ -233,6 +266,63 @@ class Society:
                         agent.update_relationship(other_name, delta)
             except Exception:
                 pass
+
+    async def direct(
+        self, from_name: str, to_name: str, message: str,
+        model: str | None = None, stream: bool = False,
+    ) -> list[Message]:
+        """Have one agent send a message to another, who then replies."""
+        if from_name not in self.agents or to_name not in self.agents:
+            raise ValueError(f"Both agents must exist: {from_name}, {to_name}")
+
+        sender = self.agents[from_name]
+        receiver = self.agents[to_name]
+
+        # Sender speaks
+        self._set_status(sender.name, AgentStatus.THINKING)
+        try:
+            prompt = f"Address {to_name} directly about: {message}"
+            text = await self._generate(sender, prompt, model=model, stream=stream)
+            sender_msg = Message(
+                agent_name=sender.name, content=text, reply_to=None,
+            )
+            self._emit_message(sender_msg)
+        except Exception as e:
+            sender_msg = Message(agent_name=sender.name, content=f"[Error: {e}]")
+            self._emit_message(sender_msg)
+        finally:
+            self._set_status(sender.name, AgentStatus.IDLE)
+
+        # Receiver responds
+        self._set_status(receiver.name, AgentStatus.THINKING)
+        try:
+            reply_prompt = f"{from_name} said to you: {text}\n\nRespond to {from_name}."
+            reply_text = await self._generate(receiver, reply_prompt, model=model, stream=stream)
+            reply_msg = Message(
+                agent_name=receiver.name, content=reply_text,
+                reply_to=sender_msg.id,
+            )
+            self._emit_message(reply_msg)
+        except Exception as e:
+            reply_msg = Message(
+                agent_name=receiver.name, content=f"[Error: {e}]",
+                reply_to=sender_msg.id,
+            )
+            self._emit_message(reply_msg)
+        finally:
+            self._set_status(receiver.name, AgentStatus.IDLE)
+
+        # Both form memories
+        sender.add_memory(
+            content=f"Spoke to {to_name} about: {message[:100]}",
+            source="conversation", importance=0.7,
+        )
+        receiver.add_memory(
+            content=f"{from_name} talked to me about: {message[:100]}",
+            source="conversation", importance=0.7,
+        )
+
+        return [sender_msg, reply_msg]
 
     async def consensus(
         self, topic: str, model: str | None = None, stream: bool = False,

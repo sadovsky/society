@@ -3,7 +3,7 @@
 from pathlib import Path
 from unittest.mock import patch
 
-from society.config import SocietyConfig, _parse_config, init_config
+from society.config import SocietyConfig, _parse_config, get_custom_agent_config, init_config
 
 
 class TestSocietyConfig:
@@ -86,6 +86,33 @@ class TestParseConfig:
         })
         assert "test" in cfg.custom_agents
         assert cfg.custom_agents["test"].name == "Testy"
+
+
+class TestCustomAgentConfig:
+    def test_get_custom_agent_config(self, tmp_path):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("""\
+[agents.devops]
+name = "Otto"
+role = "DevOps Engineer"
+temperament = "pragmatic"
+goals = ["Automate everything"]
+color = "#76a5af"
+""")
+        with patch("society.config.CONFIG_FILE", config_file):
+            cfg = get_custom_agent_config("devops")
+
+        assert cfg is not None
+        assert cfg.name == "Otto"
+        assert cfg.role == "DevOps Engineer"
+        from society.models import Temperament
+        assert cfg.temperament == Temperament.PRAGMATIC
+
+    def test_get_custom_agent_missing(self, tmp_path):
+        config_file = tmp_path / "nonexistent.toml"
+        with patch("society.config.CONFIG_FILE", config_file):
+            cfg = get_custom_agent_config("nope")
+        assert cfg is None
 
 
 class TestInitConfig:
