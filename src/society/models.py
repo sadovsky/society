@@ -97,6 +97,28 @@ class Agent(BaseModel):
     status: AgentStatus = AgentStatus.IDLE
     memories: list[Memory] = Field(default_factory=list)
     message_count: int = 0
+    relationships: dict[str, float] = Field(default_factory=dict)  # agent_name -> affinity (-1 to 1)
+
+    def update_relationship(self, other_name: str, delta: float) -> float:
+        """Adjust affinity toward another agent. Returns new value."""
+        current = self.relationships.get(other_name, 0.0)
+        new_val = max(-1.0, min(1.0, current + delta))
+        self.relationships[other_name] = round(new_val, 3)
+        return self.relationships[other_name]
+
+    def relationship_context(self) -> str:
+        """Format relationships for system prompt injection."""
+        if not self.relationships:
+            return ""
+        lines = ["Your opinions of other agents:"]
+        for name, score in sorted(self.relationships.items(), key=lambda x: x[1], reverse=True):
+            if score > 0.3:
+                lines.append(f"- {name}: You tend to agree with them (affinity {score:+.2f})")
+            elif score < -0.3:
+                lines.append(f"- {name}: You often disagree with them (affinity {score:+.2f})")
+            else:
+                lines.append(f"- {name}: Neutral (affinity {score:+.2f})")
+        return "\n".join(lines)
 
     @property
     def name(self) -> str:

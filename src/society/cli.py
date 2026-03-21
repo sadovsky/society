@@ -48,7 +48,7 @@ def main() -> None:
     # debate
     sp = subparsers.add_parser("debate", help="Multi-round debate on a topic")
     sp.add_argument("topic", help="The debate topic")
-    sp.add_argument("--rounds", type=int, default=3, help="Number of rounds (default: 3)")
+    sp.add_argument("--rounds", type=int, default=None, help="Number of rounds (default: from config or 3)")
 
     # consensus
     subparsers.add_parser("consensus", help="Synthesize group consensus")
@@ -86,6 +86,9 @@ def main() -> None:
     # reset
     subparsers.add_parser("reset", help="Clear session and start fresh")
 
+    # init
+    subparsers.add_parser("init", help="Create default config file at ~/.society/config.toml")
+
     # tui
     subparsers.add_parser("tui", help="Launch the interactive TUI dashboard")
 
@@ -102,6 +105,7 @@ def main() -> None:
         cmd_debate,
         cmd_export,
         cmd_history,
+        cmd_init,
         cmd_load,
         cmd_memories,
         cmd_preset,
@@ -132,6 +136,7 @@ def main() -> None:
         "load": lambda: cmd_load(args.name),
         "sessions": lambda: cmd_sessions(),
         "export": lambda: cmd_export(fmt=args.fmt, output=args.output),
+        "init": lambda: cmd_init(),
         "reset": lambda: cmd_reset(),
         "tui": lambda: cmd_tui(),
     }

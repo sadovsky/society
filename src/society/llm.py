@@ -7,6 +7,7 @@ from typing import Callable
 
 import anthropic
 
+from society.config import get_config
 from society.models import Agent, Message
 
 
@@ -67,23 +68,33 @@ async def generate_response(
     agent: Agent,
     conversation: list[Message],
     user_prompt: str | None = None,
-    model: str = "claude-sonnet-4-20250514",
+    model: str | None = None,
 ) -> str:
     """Generate a response from an agent using Claude."""
     client = get_client()
+    cfg = get_config()
+    model = model or cfg.model
 
     system = agent.config.system_prompt()
+    rel_ctx = agent.relationship_context()
+    if rel_ctx:
+        system += "\n\n" + rel_ctx
     memory_ctx = agent.memory_context(query=user_prompt)
     if memory_ctx:
         system += "\n\n" + memory_ctx
 
     messages = build_messages(agent, conversation, user_prompt)
 
+    extra_kwargs = {}
+    if cfg.temperature is not None:
+        extra_kwargs["temperature"] = cfg.temperature
+
     response = client.messages.create(
         model=model,
-        max_tokens=1024,
+        max_tokens=cfg.max_tokens,
         system=system,
         messages=messages,
+        **extra_kwargs,
     )
 
     text = response.content[0].text
@@ -100,25 +111,35 @@ async def generate_response_stream(
     agent: Agent,
     conversation: list[Message],
     user_prompt: str | None = None,
-    model: str = "claude-sonnet-4-20250514",
+    model: str | None = None,
     on_token: Callable[[str], None] | None = None,
 ) -> str:
     """Generate a response with streaming, calling on_token for each chunk."""
     client = get_client()
+    cfg = get_config()
+    model = model or cfg.model
 
     system = agent.config.system_prompt()
+    rel_ctx = agent.relationship_context()
+    if rel_ctx:
+        system += "\n\n" + rel_ctx
     memory_ctx = agent.memory_context(query=user_prompt)
     if memory_ctx:
         system += "\n\n" + memory_ctx
 
     messages = build_messages(agent, conversation, user_prompt)
 
+    extra_kwargs = {}
+    if cfg.temperature is not None:
+        extra_kwargs["temperature"] = cfg.temperature
+
     full_text = ""
     with client.messages.stream(
         model=model,
-        max_tokens=1024,
+        max_tokens=cfg.max_tokens,
         system=system,
         messages=messages,
+        **extra_kwargs,
     ) as stream:
         for text in stream.text_stream:
             full_text += text
@@ -138,10 +159,12 @@ async def generate_reflection(
     agent: Agent,
     debate_context: str,
     topic: str,
-    model: str = "claude-sonnet-4-20250514",
+    model: str | None = None,
 ) -> str:
     """Short internal reflection — no memory/message_count side effects."""
     client = get_client()
+    cfg = get_config()
+    model = model or cfg.model
     system = agent.config.system_prompt()
     prompt = (
         f"Reflect briefly on this debate about '{topic}'. "
@@ -156,3 +179,55 @@ async def generate_reflection(
         messages=[{"role": "user", "content": prompt}],
     )
     return response.content[0].text
+
+
+async def extract_relationship_deltas(
+    agent: Agent,
+    debate_context: str,
+    other_agents: list[str],
+    model: str | None = None,
+) -> dict[str, float]:
+    """Ask the agent to rate agreement/disagreement with other agents.
+
+    Returns a dict of agent_name -> delta (-0.2 to +0.2).
+    """
+    if not other_agents:
+        return {}
+    client = get_client()
+    cfg = get_config()
+    model = model or cfg.model
+    system = agent.config.system_prompt()
+    agent_list = ", ".join(other_agents)
+    prompt = (
+        f"Based on this debate, rate how much you agreed or disagreed with each agent.\n"
+        f"Agents: {agent_list}\n\n"
+        f"Recent discussion:\n{debate_context}\n\n"
+        f"Reply with ONLY one line per agent in the format: name:score\n"
+        f"Score from -2 (strongly disagree) to +2 (strongly agree). Example:\n"
+        f"Rex:-1\nNova:2\n"
+        f"No other text."
+    )
+    try:
+        response = client.messages.create(
+            model=model,
+            max_tokens=128,
+            system=system,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = response.content[0].text.strip()
+        deltas: dict[str, float] = {}
+        for line in text.splitlines():
+            line = line.strip()
+            if ":" not in line:
+                continue
+            parts = line.rsplit(":", 1)
+            name = parts[0].strip()
+            try:
+                raw = float(parts[1].strip())
+                # Scale from [-2,2] to [-0.2, 0.2]
+                deltas[name] = max(-0.2, min(0.2, raw / 10.0))
+            except ValueError:
+                continue
+        return deltas
+    except Exception:
+        return {}

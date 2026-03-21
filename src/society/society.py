@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Callable
 
-from society.llm import generate_reflection, generate_response, generate_response_stream
+from society.llm import extract_relationship_deltas, generate_reflection, generate_response, generate_response_stream
 from society.models import (
     AGENT_TEMPLATES,
     Agent,
@@ -199,7 +199,7 @@ class Society:
         return all_messages
 
     async def _reflect_on_debate(self, topic: str, model: str | None = None) -> None:
-        """Have each agent reflect on the debate and form inter-agent memories."""
+        """Have each agent reflect on the debate and update relationships."""
         # Gather recent debate messages as context
         recent = [m for m in self.conversation[-20:] if m.agent_name != "You"]
         debate_context = "\n".join(
@@ -209,6 +209,8 @@ class Society:
             return
 
         extra = {"model": model} if model else {}
+        all_names = list(self.agents.keys())
+
         for agent in self.agents.values():
             try:
                 text = await generate_reflection(agent, debate_context, topic, **extra)
@@ -219,6 +221,18 @@ class Society:
                 )
             except Exception:
                 pass  # Reflection failure shouldn't break the debate
+
+            # Extract and apply relationship deltas
+            try:
+                others = [n for n in all_names if n != agent.name]
+                deltas = await extract_relationship_deltas(
+                    agent, debate_context, others, **extra
+                )
+                for other_name, delta in deltas.items():
+                    if other_name in self.agents:
+                        agent.update_relationship(other_name, delta)
+            except Exception:
+                pass
 
     async def consensus(
         self, topic: str, model: str | None = None, stream: bool = False,

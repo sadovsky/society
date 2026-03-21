@@ -9,6 +9,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
+from society.config import get_config, init_config
 from society.models import AGENT_TEMPLATES, PRESETS, AgentConfig, Temperament
 from society.session import load_session, save_session, session_to_society, society_to_session
 
@@ -122,27 +123,48 @@ def cmd_spawn(role_or_template: str) -> None:
 
 
 def cmd_solve(question: str, model: str | None = None) -> None:
-    """Ask all agents a question."""
+    """Ask all agents a question with streaming output."""
     data = load_session()
     society = session_to_society(data)
     if not _require_agents(len(society.agents)):
         return
 
-    def print_message(msg):
+    _streaming_buf: dict[str, str] = {"agent": "", "text": ""}
+
+    def on_msg(msg):
+        # Clear streaming line before printing final message
         if msg.agent_name == "You":
             console.print(f"\n[bold cyan]You:[/bold cyan] {msg.content}")
-        else:
-            agent = society.agents.get(msg.agent_name)
-            color = agent.color if agent else "white"
-            console.print(f"\n[bold {color}]{msg.agent_name}:[/bold {color}] {msg.content}")
+        # Agent messages are printed by the streaming callback already
 
-    society.on_message(print_message)
-    asyncio.run(society.ask(question, model=model))
+    def on_token(agent_name, token):
+        if _streaming_buf["agent"] != agent_name:
+            # New agent speaking — print header
+            if _streaming_buf["agent"]:
+                console.print()  # end previous agent's output
+            agent = society.agents.get(agent_name)
+            color = agent.color if agent else "white"
+            console.print(f"\n[bold {color}]{agent_name}:[/bold {color}] ", end="")
+            _streaming_buf["agent"] = agent_name
+            _streaming_buf["text"] = ""
+        print(token, end="", flush=True)
+        _streaming_buf["text"] += token
+
+    def on_msg_done(msg):
+        if msg.agent_name != "You":
+            console.print()  # newline after streamed output
+
+    society.on_token(on_token)
+    society.on_message(on_msg_done)
+
+    # Print the question
+    console.print(f"\n[bold cyan]You:[/bold cyan] {question}")
+    asyncio.run(society.ask(question, model=model, stream=True))
     save_session(society_to_session(society))
 
 
 def cmd_ask(agent_ref: str, question: str, model: str | None = None) -> None:
-    """Ask a specific agent a question."""
+    """Ask a specific agent a question with streaming output."""
     data = load_session()
     society = session_to_society(data)
     if not _require_agents(len(society.agents)):
@@ -162,21 +184,34 @@ def cmd_ask(agent_ref: str, question: str, model: str | None = None) -> None:
         console.print(f"Available: {', '.join(society.agents.keys())}")
         return
 
-    def print_message(msg):
-        if msg.agent_name == "You":
-            console.print(f"\n[bold cyan]You:[/bold cyan] {msg.content}")
-        else:
-            agent = society.agents.get(msg.agent_name)
-            color = agent.color if agent else "white"
-            console.print(f"\n[bold {color}]{msg.agent_name}:[/bold {color}] {msg.content}")
+    _header_printed = {"done": False}
 
-    society.on_message(print_message)
-    asyncio.run(society.ask(question, agent_name, model=model))
+    def on_token(a_name, token):
+        if not _header_printed["done"]:
+            agent = society.agents.get(a_name)
+            color = agent.color if agent else "white"
+            console.print(f"\n[bold {color}]{a_name}:[/bold {color}] ", end="")
+            _header_printed["done"] = True
+        print(token, end="", flush=True)
+
+    def on_msg(msg):
+        if msg.agent_name != "You":
+            console.print()  # newline after stream
+
+    society.on_token(on_token)
+    society.on_message(on_msg)
+
+    console.print(f"\n[bold cyan]You:[/bold cyan] {question}")
+    asyncio.run(society.ask(question, agent_name, model=model, stream=True))
     save_session(society_to_session(society))
 
 
-def cmd_debate(topic: str, rounds: int = 3, model: str | None = None) -> None:
-    """Run a multi-round debate between all agents."""
+def cmd_debate(topic: str, rounds: int | None = None, model: str | None = None) -> None:
+    """Run a multi-round debate between all agents with streaming output."""
+    cfg = get_config()
+    if rounds is None:
+        rounds = cfg.debate_rounds
+
     data = load_session()
     society = session_to_society(data)
     if not _require_agents(len(society.agents)):
@@ -184,16 +219,37 @@ def cmd_debate(topic: str, rounds: int = 3, model: str | None = None) -> None:
 
     console.print(f"\n[bold]Debate:[/bold] {topic} ({rounds} rounds)\n")
 
-    def print_message(msg):
+    _streaming_buf: dict[str, str] = {"agent": ""}
+
+    def on_token(agent_name, token):
+        if _streaming_buf["agent"] != agent_name:
+            if _streaming_buf["agent"]:
+                console.print()
+            agent = society.agents.get(agent_name)
+            color = agent.color if agent else "white"
+            console.print(f"\n[bold {color}]{agent_name}:[/bold {color}] ", end="")
+            _streaming_buf["agent"] = agent_name
+        print(token, end="", flush=True)
+
+    def on_msg(msg):
         if msg.agent_name == "You":
             console.print(f"[dim]{msg.content}[/dim]")
-        else:
-            agent = society.agents.get(msg.agent_name)
-            color = agent.color if agent else "white"
-            console.print(f"\n[bold {color}]{msg.agent_name}:[/bold {color}] {msg.content}")
+        elif msg.agent_name != "You":
+            console.print()  # newline after stream
 
-    society.on_message(print_message)
-    asyncio.run(society.debate(topic, rounds=rounds, model=model))
+    def on_progress(round_num, total, phase):
+        if phase == "Reflecting":
+            console.print(f"\n[dim]Agents reflecting on debate...[/dim]")
+        elif phase == "Complete":
+            console.print(f"\n[bold green]Debate complete![/bold green]")
+        else:
+            console.print(f"\n[dim]— Round {round_num}/{total}: {phase} —[/dim]")
+
+    society.on_token(on_token)
+    society.on_message(on_msg)
+    society.on_debate_progress(on_progress)
+
+    asyncio.run(society.debate(topic, rounds=rounds, model=model, stream=True))
     save_session(society_to_session(society))
 
 
@@ -232,14 +288,29 @@ def cmd_status() -> None:
     table.add_column("Temperament")
     table.add_column("Memories", justify="right")
     table.add_column("Messages", justify="right")
+    table.add_column("Relationships")
 
     for agent in data.agents:
+        # Format relationships as compact string
+        rels = ""
+        if agent.relationships:
+            parts = []
+            for name, score in sorted(agent.relationships.items(), key=lambda x: x[1], reverse=True):
+                if score > 0.1:
+                    parts.append(f"[green]+{name}[/green]")
+                elif score < -0.1:
+                    parts.append(f"[red]-{name}[/red]")
+            rels = " ".join(parts[:3]) if parts else "[dim]—[/dim]"
+        else:
+            rels = "[dim]—[/dim]"
+
         table.add_row(
             f"[{agent.color}]{agent.name}[/{agent.color}]",
             agent.config.role,
             agent.config.temperament.value,
             str(len(agent.memories)),
             str(agent.message_count),
+            rels,
         )
 
     console.print(table)
@@ -469,6 +540,18 @@ def cmd_export(fmt: str = "md", output: str | None = None) -> None:
         console.print(f"[bold green]Exported to {output}[/bold green]")
     else:
         console.print(content)
+
+
+def cmd_init() -> None:
+    """Create a default config file."""
+    from society.config import CONFIG_FILE
+
+    if CONFIG_FILE.exists():
+        console.print(f"[yellow]Config already exists:[/yellow] {CONFIG_FILE}")
+    else:
+        init_config()
+        console.print(f"[bold green]Config created:[/bold green] {CONFIG_FILE}")
+        console.print("[dim]Edit the file to customize model, temperature, agents, etc.[/dim]")
 
 
 def cmd_reset() -> None:
