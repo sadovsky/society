@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Callable
 
-from society.llm import generate_response, generate_response_stream
+from society.llm import generate_reflection, generate_response, generate_response_stream
 from society.models import (
     AGENT_TEMPLATES,
     Agent,
@@ -187,11 +187,38 @@ class Society:
                 importance=0.8,
             )
 
+        # Reflect on debate — agents form opinions about each other
+        if self._on_debate_progress:
+            self._on_debate_progress(rounds, rounds, "Reflecting")
+        await self._reflect_on_debate(topic, model=model)
+
         # Signal debate complete
         if self._on_debate_progress:
             self._on_debate_progress(rounds, rounds, "Complete")
 
         return all_messages
+
+    async def _reflect_on_debate(self, topic: str, model: str | None = None) -> None:
+        """Have each agent reflect on the debate and form inter-agent memories."""
+        # Gather recent debate messages as context
+        recent = [m for m in self.conversation[-20:] if m.agent_name != "You"]
+        debate_context = "\n".join(
+            f"{m.agent_name}: {m.content[:150]}" for m in recent[-10:]
+        )
+        if not debate_context:
+            return
+
+        extra = {"model": model} if model else {}
+        for agent in self.agents.values():
+            try:
+                text = await generate_reflection(agent, debate_context, topic, **extra)
+                agent.add_memory(
+                    content=f"Reflection on '{topic}': {text[:300]}",
+                    source="reflection",
+                    importance=0.85,
+                )
+            except Exception:
+                pass  # Reflection failure shouldn't break the debate
 
     async def consensus(
         self, topic: str, model: str | None = None, stream: bool = False,
@@ -220,6 +247,11 @@ class Society:
             text = await self._generate(facilitator, prompt, model=model, stream=stream)
             msg = Message(agent_name=facilitator.name, content=text)
             self._emit_message(msg)
+            facilitator.add_memory(
+                content=f"Synthesized consensus on: {topic[:100]}",
+                source="observation",
+                importance=0.8,
+            )
             return msg
         finally:
             self._set_status(facilitator.name, AgentStatus.IDLE)

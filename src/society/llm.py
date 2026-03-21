@@ -73,7 +73,7 @@ async def generate_response(
     client = get_client()
 
     system = agent.config.system_prompt()
-    memory_ctx = agent.memory_context()
+    memory_ctx = agent.memory_context(query=user_prompt)
     if memory_ctx:
         system += "\n\n" + memory_ctx
 
@@ -107,7 +107,7 @@ async def generate_response_stream(
     client = get_client()
 
     system = agent.config.system_prompt()
-    memory_ctx = agent.memory_context()
+    memory_ctx = agent.memory_context(query=user_prompt)
     if memory_ctx:
         system += "\n\n" + memory_ctx
 
@@ -132,3 +132,27 @@ async def generate_response_stream(
         importance=0.6,
     )
     return full_text
+
+
+async def generate_reflection(
+    agent: Agent,
+    debate_context: str,
+    topic: str,
+    model: str = "claude-sonnet-4-20250514",
+) -> str:
+    """Short internal reflection — no memory/message_count side effects."""
+    client = get_client()
+    system = agent.config.system_prompt()
+    prompt = (
+        f"Reflect briefly on this debate about '{topic}'. "
+        "In 2-3 sentences: What did you learn? "
+        "Which agents agreed or disagreed with you and why?\n\n"
+        f"Recent discussion:\n{debate_context}"
+    )
+    response = client.messages.create(
+        model=model,
+        max_tokens=256,
+        system=system,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return response.content[0].text

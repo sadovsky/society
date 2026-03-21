@@ -265,8 +265,8 @@ def cmd_history() -> None:
             console.print(f"\n[bold {color}]{msg.agent_name}:[/bold {color}] {msg.content}")
 
 
-def cmd_memories(agent_ref: str) -> None:
-    """Show memories for a specific agent."""
+def cmd_memories(agent_ref: str, search: str | None = None) -> None:
+    """Show memories for a specific agent, optionally filtered by search."""
     data = load_session()
 
     name = agent_ref.lstrip("@")
@@ -282,14 +282,19 @@ def cmd_memories(agent_ref: str) -> None:
             console.print(f"Available: {', '.join(a.name for a in data.agents)}")
         return
 
-    memories = agent.recent_memories(20)
+    if search:
+        memories = agent.search_memories(search)
+        console.print(f"[dim]Search: '{search}' ({len(memories)} results)[/dim]\n")
+    else:
+        memories = agent.recent_memories(20)
+
     if not memories:
         console.print(f"[dim]{agent.name} has no memories yet.[/dim]")
         return
 
     console.print(f"[bold {agent.color}]{agent.name}'s Memories[/bold {agent.color}]\n")
     for m in memories:
-        importance = "!" * int(m.importance * 5)
+        importance = "!" * int(m.effective_importance() * 5)
         console.print(f"  [{m.source}] {importance} {m.summary()}")
 
 

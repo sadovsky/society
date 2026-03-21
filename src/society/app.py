@@ -238,17 +238,21 @@ class MemoryPanel(Widget):
     def compose(self) -> ComposeResult:
         yield RichLog(highlight=True, markup=True, wrap=True, id="memory-log")
 
-    def show_memories(self, agent: Agent) -> None:
+    def show_memories(self, agent: Agent, search: str | None = None) -> None:
         try:
             log = self.query_one("#memory-log", RichLog)
             log.clear()
-            log.write(f"[bold]{agent.name}'s Memories[/bold]\n")
-            memories = agent.recent_memories(20)
+            if search:
+                memories = agent.search_memories(search)
+                log.write(f"[bold]{agent.name}'s Memories[/bold] [dim](search: '{search}', {len(memories)} results)[/dim]\n")
+            else:
+                memories = agent.recent_memories(20)
+                log.write(f"[bold]{agent.name}'s Memories[/bold]\n")
             if not memories:
                 log.write("[dim]No memories yet.[/dim]")
                 return
             for m in memories:
-                importance = "!" * int(m.importance * 5)
+                importance = "!" * int(m.effective_importance() * 5)
                 log.write(f"  [{m.source}] {importance} {m.summary()}")
         except NoMatches:
             pass
@@ -434,9 +438,11 @@ class SocietyApp(App):
             parts = text.split()
             if len(parts) > 1 and parts[1].startswith("@"):
                 name = parts[1][1:]
+                # Extract search query if present: /memories @Aria search term
+                search_query = " ".join(parts[2:]) if len(parts) > 2 else None
                 for n, agent in self.society.agents.items():
                     if n.lower() == name.lower():
-                        self._show_memories(agent)
+                        self._show_memories(agent, search=search_query)
                         break
             else:
                 self.action_cycle_memories()
@@ -499,10 +505,10 @@ class SocietyApp(App):
         except NoMatches:
             pass
 
-    def _show_memories(self, agent: Agent) -> None:
+    def _show_memories(self, agent: Agent, search: str | None = None) -> None:
         try:
             mem_panel = self.query_one(MemoryPanel)
-            mem_panel.show_memories(agent)
+            mem_panel.show_memories(agent, search=search)
             tabs = self.query_one(TabbedContent)
             tabs.active = "tab-mem"
         except NoMatches:

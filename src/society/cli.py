@@ -62,6 +62,7 @@ def main() -> None:
     # memories
     sp = subparsers.add_parser("memories", help="Show an agent's memories")
     sp.add_argument("agent", help="Agent name (e.g. @Aria)")
+    sp.add_argument("--search", "-s", default=None, help="Search memories by keyword")
 
     # templates
     subparsers.add_parser("templates", help="List available agent templates and presets")
@@ -125,7 +126,7 @@ def main() -> None:
         "consensus": lambda: cmd_consensus(model=args.model),
         "status": lambda: cmd_status(),
         "history": lambda: cmd_history(),
-        "memories": lambda: cmd_memories(args.agent),
+        "memories": lambda: cmd_memories(args.agent, search=args.search),
         "templates": lambda: cmd_templates(),
         "save": lambda: cmd_save(args.name),
         "load": lambda: cmd_load(args.name),

@@ -35,6 +35,12 @@ class Memory(BaseModel):
     source: str  # "observation", "conversation", "reflection"
     importance: float = 0.5  # 0.0 to 1.0
 
+    def effective_importance(self) -> float:
+        """Importance with time decay — 5% per day."""
+        age_days = (time.time() - self.timestamp) / 86400
+        decay = 0.95 ** age_days
+        return self.importance * decay
+
     def summary(self, max_len: int = 80) -> str:
         text = self.content.replace("\n", " ")
         if len(text) > max_len:
@@ -103,22 +109,45 @@ class Agent(BaseModel):
     def add_memory(self, content: str, source: str = "observation", importance: float = 0.5) -> Memory:
         memory = Memory(content=content, source=source, importance=importance)
         self.memories.append(memory)
-        # Keep memories bounded
+        # Keep memories bounded — evict by effective importance (time-decayed)
         if len(self.memories) > 100:
-            # Drop lowest importance memories
-            self.memories.sort(key=lambda m: m.importance, reverse=True)
+            self.memories.sort(key=lambda m: m.effective_importance(), reverse=True)
             self.memories = self.memories[:80]
         return memory
 
     def recent_memories(self, n: int = 10) -> list[Memory]:
         return sorted(self.memories, key=lambda m: m.timestamp, reverse=True)[:n]
 
-    def memory_context(self, n: int = 5) -> str:
-        recent = self.recent_memories(n)
-        if not recent:
+    def relevant_memories(self, query: str, n: int = 10) -> list[Memory]:
+        """Retrieve memories ranked by relevance to a query."""
+        query_words = set(query.lower().split())
+        now = time.time()
+        scored = []
+        for m in self.memories:
+            memory_words = set(m.content.lower().split())
+            relevance = len(query_words & memory_words) / max(len(query_words), 1)
+            recency = 1.0 / (1 + (now - m.timestamp) / 86400)
+            score = m.effective_importance() * 0.4 + recency * 0.3 + relevance * 0.3
+            scored.append((score, m))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [m for _, m in scored[:n]]
+
+    def search_memories(self, query: str, n: int = 20) -> list[Memory]:
+        """Search memories by keyword substring match."""
+        query_lower = query.lower()
+        matches = [m for m in self.memories if query_lower in m.content.lower()]
+        return sorted(matches, key=lambda m: m.timestamp, reverse=True)[:n]
+
+    def memory_context(self, n: int = 10, query: str | None = None) -> str:
+        """Format memories for system prompt injection."""
+        if query:
+            memories = self.relevant_memories(query, n)
+        else:
+            memories = self.recent_memories(n)
+        if not memories:
             return ""
         lines = ["Your recent memories:"]
-        for m in recent:
+        for m in memories:
             lines.append(f"- [{m.source}] {m.summary()}")
         return "\n".join(lines)
 
